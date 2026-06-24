@@ -1,0 +1,14 @@
+html, body {
+    margin: 0;
+    padding: 0;
+    background-color: #ffffff;
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+    color: #1d1d1f;
+    /* Clip content to follow macOS window corner radius */
+    border-radius: inherit;
+    overflow: hidden;
+}
+
+#app {
+    height: 100vh;
+}
