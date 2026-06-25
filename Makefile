@@ -1,4 +1,4 @@
-.PHONY: dev build sign dmg notarize release
+.PHONY: dev build bundle-libs sign dmg notarize release
 
 # 署名・公証に必要な設定
 TEAM_ID       := V888BAN3D8
@@ -16,7 +16,23 @@ dev:
 build:
 	~/go/bin/wails build
 
-sign: build
+bundle-libs: build
+	@echo "==> Bundling libmecab into app..."
+	@mkdir -p $(APP_PATH)/Contents/Frameworks
+	@cp /opt/homebrew/opt/mecab/lib/libmecab.2.dylib $(APP_PATH)/Contents/Frameworks/
+	@chmod 755 $(APP_PATH)/Contents/Frameworks/libmecab.2.dylib
+	@install_name_tool -change \
+		/opt/homebrew/opt/mecab/lib/libmecab.2.dylib \
+		@executable_path/../Frameworks/libmecab.2.dylib \
+		$(APP_PATH)/Contents/MacOS/SIRANAI
+	@echo "==> libmecab bundled."
+
+sign: bundle-libs
+	@echo "==> Signing bundled libraries..."
+	@codesign --force --options runtime \
+		--sign "$(SIGN_IDENTITY)" \
+		--timestamp \
+		$(APP_PATH)/Contents/Frameworks/libmecab.2.dylib
 	@echo "==> Signing app..."
 	@codesign --deep --force --options runtime \
 		--sign "$(SIGN_IDENTITY)" \
