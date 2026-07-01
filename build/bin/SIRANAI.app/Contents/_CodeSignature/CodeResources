@@ -6,25 +6,16 @@
 	<dict>
 		<key>Resources/iconfile.icns</key>
 		<data>
-		rNyzAYdO0eEEjdTrnp/DyVbdxdg=
+		Xr6m0rTeVTlp1PDfUx26JOP0Rb4=
 		</data>
 	</dict>
 	<key>files2</key>
 	<dict>
-		<key>Frameworks/libmecab.2.dylib</key>
-		<dict>
-			<key>cdhash</key>
-			<data>
-			ZGWda1MGk8pDGScmXkztBXWxfdI=
-			</data>
-			<key>requirement</key>
-			<string>identifier "libmecab.2" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = V888BAN3D8</string>
-		</dict>
 		<key>Resources/iconfile.icns</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			UOMNY9j9yLz4kvzr5f/n6nqzCltvDBQiPlLl4XhYN6U=
+			5Zn8RfgVbBKpXE85kciu12GnTfRfcyeo98T31N5yp2g=
 			</data>
 		</dict>
 	</dict>
