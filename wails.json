@@ -9,5 +9,10 @@
   "author": {
     "name": "ichizoyokota",
     "email": "yokota@yeees.in"
+  },
+  "info": {
+    "productVersion": "0.1.0",
+    "copyright": "© 2025 Yeees.in",
+    "comments": "SIRANAI - Think · Ask · Organize"
   }
 }

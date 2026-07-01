@@ -22,7 +22,13 @@ func main() {
 
 	// macOS requires the first menu to be the app-name menu
 	appNameMenu := appMenu.AddSubmenu("SIRANAI")
-	appNameMenu.AddText("About SIRANAI", nil, nil)
+	appNameMenu.AddText("About SIRANAI", nil, func(_ *menu.CallbackData) {
+		runtime.EventsEmit(app.ctx, "menu:about")
+	})
+	appNameMenu.AddSeparator()
+	appNameMenu.AddText("設定...", keys.CmdOrCtrl(","), func(_ *menu.CallbackData) {
+		runtime.EventsEmit(app.ctx, "menu:settings")
+	})
 	appNameMenu.AddSeparator()
 	appNameMenu.AddText("Quit SIRANAI", keys.CmdOrCtrl("q"), func(_ *menu.CallbackData) {
 		runtime.Quit(app.ctx)
@@ -30,6 +36,10 @@ func main() {
 
 	// File menu
 	fileMenu := appMenu.AddSubmenu("File")
+	fileMenu.AddText("新規作成", keys.CmdOrCtrl("n"), func(_ *menu.CallbackData) {
+		runtime.EventsEmit(app.ctx, "menu:new")
+	})
+	fileMenu.AddSeparator()
 	fileMenu.AddText("Open", keys.CmdOrCtrl("o"), func(_ *menu.CallbackData) {
 		runtime.EventsEmit(app.ctx, "menu:open")
 	})

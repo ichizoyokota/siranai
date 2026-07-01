@@ -1,4 +1,5 @@
 import {useEffect, useRef, useState} from 'react';
+import appIcon from './assets/images/appicon.png';
 import {marked} from 'marked';
 import {LoadSettings, OpenFile, QueryAI, ReopenWithEncoding, SaveFile, SaveFileWithEncoding, SaveSettings} from '../wailsjs/go/main/App';
 import {ClipboardGetText, ClipboardSetText, EventsOn, WindowSetTitle} from '../wailsjs/runtime/runtime';
@@ -13,6 +14,8 @@ interface AIProviderConfig {
     model: string;
     enabled: boolean;
 }
+
+const APP_VERSION = '0.1.0';
 
 const PROVIDER_MODELS: Record<string, string[]> = {
     gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'],
@@ -51,6 +54,9 @@ function App() {
     // Encoding
     const [fileEncoding, setFileEncoding] = useState('UTF-8');
     const [showEncodingMenu, setShowEncodingMenu] = useState(false);
+
+    // About modal
+    const [showAbout, setShowAbout] = useState(false);
 
     // Settings modal
     const [showSettings, setShowSettings] = useState(false);
@@ -115,6 +121,13 @@ function App() {
         const next = redoStack.current.pop()!;
         undoStack.current.push(next);
         setMarkdown(next);
+    }
+
+    function handleNew() {
+        undoStack.current = [''];
+        redoStack.current = [];
+        setMarkdown('');
+        setFilePath('');
     }
 
     async function handleOpen() {
@@ -366,7 +379,10 @@ function App() {
     // Menu events
     useEffect(() => {
         const offs = [
+            EventsOn('menu:about',     () => setShowAbout(true)),
+            EventsOn('menu:new',       () => handleNew()),
             EventsOn('menu:open',      () => handleOpen()),
+            EventsOn('menu:settings',  () => setShowSettings(true)),
             EventsOn('menu:save',      () => handleSave()),
             EventsOn('menu:saveAs',    () => handleSaveAs()),
             EventsOn('menu:undo',      () => doUndo()),
@@ -410,6 +426,23 @@ function App() {
 
     return (
         <div id="App" style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
+
+            {/* About modal */}
+            {showAbout && (
+                <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                    onMouseDown={() => setShowAbout(false)}>
+                    <div style={{ background: '#fff', borderRadius: '12px', padding: '32px 40px', width: '320px', textAlign: 'center', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}
+                        onMouseDown={e => e.stopPropagation()}>
+                        <img src={appIcon} alt="SIRANAI" style={{ width: '80px', height: '80px', borderRadius: '18px', marginBottom: '16px' }} />
+                        <h2 style={{ margin: '0 0 4px', fontSize: '22px' }}>SIRANAI</h2>
+                        <p style={{ margin: '0 0 4px', color: '#555', fontSize: '13px' }}>Think · Ask · Organize</p>
+                        <p style={{ margin: '0 0 20px', color: '#888', fontSize: '12px' }}>Version {APP_VERSION}</p>
+                        <p style={{ margin: '0 0 4px', color: '#aaa', fontSize: '11px' }}>© 2025 Yeees.in</p>
+                        <p style={{ margin: '0 0 20px', color: '#aaa', fontSize: '11px' }}>https://www.yeees.in</p>
+                        <button onClick={() => setShowAbout(false)} style={{ background: '#2563eb', color: '#fff', border: 'none', padding: '6px 24px', borderRadius: '4px', cursor: 'pointer' }}>OK</button>
+                    </div>
+                </div>
+            )}
 
             {/* Settings modal */}
             {showSettings && (
