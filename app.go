@@ -35,7 +35,7 @@ type Settings struct {
 func defaultSettings() Settings {
 	return Settings{
 		Providers: []AIProvider{
-			{ID: "gemini", Name: "Gemini", Model: "gemini-2.0-flash"},
+			{ID: "gemini", Name: "Gemini", Model: "gemini-2.5-flash"},
 			{ID: "openai", Name: "ChatGPT (OpenAI)", Model: "gpt-4o"},
 			{ID: "claude", Name: "Claude (Anthropic)", Model: "claude-sonnet-4-6"},
 		},
@@ -257,7 +257,9 @@ func (a *App) QueryAI(selectedText, question, providerID string) (string, error)
 
 // App struct
 type App struct {
-	ctx context.Context
+	ctx             context.Context
+	pendingFilePath string
+	frontendReady   bool
 }
 
 // NewApp creates a new App application struct
@@ -269,6 +271,34 @@ func NewApp() *App {
 // so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	// pendingFilePath is fetched by the frontend via GetPendingFilePath() on mount
+}
+
+// GetPendingFilePath marks the frontend as ready and returns any file path
+// queued before the frontend finished loading (e.g. Finder double-click at launch).
+func (a *App) GetPendingFilePath() string {
+	a.frontendReady = true
+	path := a.pendingFilePath
+	a.pendingFilePath = ""
+	if path != "" {
+		runtime.WindowShow(a.ctx)
+	}
+	return path
+}
+
+// OpenFileByPath opens a file at the given path and returns its content
+func (a *App) OpenFileByPath(path string) (map[string]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	encoding := detectEncoding(data)
+	content, err := decodeBytes(data, encoding)
+	if err != nil {
+		content = string(data)
+		encoding = "UTF-8"
+	}
+	return map[string]string{"path": path, "content": content, "encoding": encoding}, nil
 }
 
 // ---- Encoding helpers ----

@@ -11,8 +11,16 @@
     "email": "yokota@yeees.in"
   },
   "info": {
-    "productVersion": "0.1.0",
+    "productVersion": "0.1.1",
     "copyright": "© 2025 Yeees.in",
-    "comments": "SIRANAI - Think · Ask · Organize"
+    "comments": "SIRANAI - Think · Ask · Organize",
+    "fileAssociations": [
+      {
+        "ext": "md",
+        "name": "Markdown Document",
+        "iconName": "appicon",
+        "role": "Editor"
+      }
+    ]
   }
 }

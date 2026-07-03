@@ -70,27 +70,59 @@ go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
 ---
 
-## 起動
+## 開発
 
-開発モードで起動します（ホットリロード有効）。
+### 開発モードで起動（ホットリロード有効）
 
 ```bash
+make dev
+# または
 wails dev
 ```
 
-ブラウザから Go バックエンドにアクセスする場合は http://localhost:34115 を開いてください。
+- フロントエンド（Vite）: http://localhost:5174/
+- Go バックエンド（直接アクセス）: http://localhost:34115
 
 ---
 
-## ビルド
+## ビルド・配布
 
-配布用のネイティブアプリをビルドします。
+### ステップ一覧
+
+| コマンド | 内容 |
+|---------|------|
+| `make build` | ネイティブアプリをビルド（`build/bin/SIRANAI.app`） |
+| `make bundle-libs` | libmecab をアプリバンドルに同梱 |
+| `make sign` | Developer ID で署名（要 Apple Developer アカウント） |
+| `make dmg` | 署名済み DMG を作成（`build/SIRANAI.dmg`） |
+| `make notarize` | Apple に公証申請・Staple |
+| `make release` | 上記すべてを一括実行 |
+
+### 開発ビルドのみ
 
 ```bash
+make build
+# または
 wails build
 ```
 
 ビルド成果物は `build/bin/` に出力されます。
+
+### DMG 作成（署名まで）
+
+```bash
+make dmg
+```
+
+### 公証付き配布用 DMG（フルリリース）
+
+`APPLE_PASSWORD` には Apple ID のアプリ固有パスワードを指定します。
+
+```bash
+make release APPLE_PASSWORD=xxxx-xxxx-xxxx-xxxx
+```
+
+> アプリ固有パスワードは [appleid.apple.com](https://appleid.apple.com) で発行できます。
 
 ---
 

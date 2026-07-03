@@ -1,7 +1,7 @@
 import {useEffect, useRef, useState} from 'react';
 import appIcon from './assets/images/appicon.png';
 import {marked} from 'marked';
-import {LoadSettings, OpenFile, QueryAI, ReopenWithEncoding, SaveFile, SaveFileWithEncoding, SaveSettings} from '../wailsjs/go/main/App';
+import {GetPendingFilePath, LoadSettings, OpenFile, OpenFileByPath, QueryAI, ReopenWithEncoding, SaveFile, SaveFileWithEncoding, SaveSettings} from '../wailsjs/go/main/App';
 import {ClipboardGetText, ClipboardSetText, EventsOn, WindowSetTitle} from '../wailsjs/runtime/runtime';
 import './App.css';
 
@@ -15,16 +15,16 @@ interface AIProviderConfig {
     enabled: boolean;
 }
 
-const APP_VERSION = '0.1.0';
+const APP_VERSION = '0.1.1';
 
 const PROVIDER_MODELS: Record<string, string[]> = {
-    gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'],
+    gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite', 'gemini-flash-latest', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'],
     openai: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo', 'o1', 'o1-mini'],
     claude: ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'],
 };
 
 const DEFAULT_PROVIDERS: AIProviderConfig[] = [
-    { id: 'gemini', name: 'Gemini', apiKey: '', model: 'gemini-2.0-flash', enabled: false },
+    { id: 'gemini', name: 'Gemini', apiKey: '', model: 'gemini-2.5-flash', enabled: false },
     { id: 'openai', name: 'ChatGPT (OpenAI)', apiKey: '', model: 'gpt-4o', enabled: false },
     { id: 'claude', name: 'Claude (Anthropic)', apiKey: '', model: 'claude-sonnet-4-6', enabled: false },
 ];
@@ -50,6 +50,13 @@ function App() {
     const [aiHighlight, setAiHighlight] = useState<{ start: number; end: number } | null>(null);
     const [popup, setPopup] = useState<{ x: number; y: number; text: string } | null>(null);
     const [popupQuestion, setPopupQuestion] = useState('');
+    const [aiSelectedText, setAiSelectedText] = useState('');
+    const [aiQuestion, setAiQuestion] = useState('');
+    const [aiProviderId, setAiProviderId] = useState('');
+    const [aiHistory, setAiHistory] = useState<{providerName: string; response: string; error: string; selectedText: string; question: string}[]>([]);
+
+    // Right pane resize
+    const [rightPaneWidth, setRightPaneWidth] = useState<number | null>(null);
 
     // Encoding
     const [fileEncoding, setFileEncoding] = useState('UTF-8');
@@ -61,6 +68,13 @@ function App() {
     // Settings modal
     const [showSettings, setShowSettings] = useState(false);
     const [settingsProviders, setSettingsProviders] = useState<AIProviderConfig[]>(DEFAULT_PROVIDERS);
+
+    // View options
+    const [showLineNumbers, setShowLineNumbers] = useState(true);
+    const [showPreview, setShowPreview] = useState(true);
+
+    // Status bar
+    const [cursorLine, setCursorLine] = useState(1);
 
     const filePathRef = useRef(filePath);
     const markdownRef = useRef(markdown);
@@ -74,9 +88,20 @@ function App() {
     const undoStack = useRef<string[]>([INITIAL_CONTENT]);
     const redoStack = useRef<string[]>([]);
     const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const lineNumbersRef = useRef<HTMLDivElement>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
+    const isDraggingRef2 = useRef(false);
+    const aiResponseAreaRef = useRef<HTMLDivElement>(null);
+    const dragStartXRef = useRef(0);
+    const dragStartWidthRef = useRef(0);
 
     useEffect(() => { filePathRef.current = filePath; }, [filePath]);
     useEffect(() => { markdownRef.current = markdown; }, [markdown]);
+    // Auto-scroll AI response area to bottom when response updates
+    useEffect(() => {
+        const el = aiResponseAreaRef.current;
+        if (el) el.scrollTop = el.scrollHeight;
+    }, [aiResponse, aiHistory.length]);
 
     // Load settings on mount
     useEffect(() => {
@@ -84,6 +109,10 @@ function App() {
             if (s?.providers && s.providers.length > 0) {
                 setSettingsProviders(s.providers as AIProviderConfig[]);
             }
+        });
+        // Open file passed at launch via Finder double-click
+        GetPendingFilePath().then(path => {
+            if (path) handleOpenPath(path);
         });
     }, []);
 
@@ -155,6 +184,21 @@ function App() {
             ? await SaveFileWithEncoding('', markdownRef.current, enc)
             : await SaveFile('', markdownRef.current);
         if (savedPath) setFilePath(savedPath);
+    }
+
+    async function handleOpenPath(path: string) {
+        try {
+            const result = await OpenFileByPath(path);
+            if (result) {
+                undoStack.current = [result.content];
+                redoStack.current = [];
+                setMarkdown(result.content);
+                setFilePath(result.path);
+                setFileEncoding(result.encoding ?? 'UTF-8');
+            }
+        } catch (err: any) {
+            console.error('Failed to open file:', err);
+        }
     }
 
     async function handleReopenWithEncoding(encoding: string) {
@@ -256,9 +300,51 @@ function App() {
         textareaRef.current?.select();
     }
 
+    // Right-pane resize drag
+    useEffect(() => {
+        function onMouseMove(e: MouseEvent) {
+            if (!isDraggingRef2.current) return;
+            const delta = dragStartXRef.current - e.clientX;
+            const containerW = containerRef.current?.clientWidth ?? 800;
+            const newW = Math.max(200, Math.min(dragStartWidthRef.current + delta, containerW - 200));
+            setRightPaneWidth(newW);
+        }
+        function onMouseUp() {
+            isDraggingRef2.current = false;
+            document.body.style.cursor = '';
+            (document.body.style as any).userSelect = '';
+        }
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+        return () => {
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+        };
+    }, []);
+
+    function startResize(e: React.MouseEvent) {
+        e.preventDefault();
+        isDraggingRef2.current = true;
+        dragStartXRef.current = e.clientX;
+        const containerW = containerRef.current?.clientWidth ?? 800;
+        dragStartWidthRef.current = rightPaneWidth ?? Math.round(containerW / 2);
+        document.body.style.cursor = 'col-resize';
+        (document.body.style as any).userSelect = 'none';
+    }
+
     function handleTextareaScroll() {
         if (overlayRef.current && textareaRef.current) {
             overlayRef.current.scrollTop = textareaRef.current.scrollTop;
+        }
+        if (lineNumbersRef.current && textareaRef.current) {
+            lineNumbersRef.current.scrollTop = textareaRef.current.scrollTop;
+        }
+    }
+
+    function updateCursorLine() {
+        if (textareaRef.current) {
+            const pos = textareaRef.current.selectionStart;
+            setCursorLine(markdown.substring(0, pos).split('\n').length);
         }
     }
 
@@ -344,20 +430,49 @@ function App() {
         return () => document.removeEventListener('mouseup', onDocMouseUp);
     }, []);
 
-    // AI query
+    function pushToHistory(providerName: string, response: string, error: string) {
+        if (response || error) {
+            setAiHistory(prev => [{ providerName, response, error, selectedText: aiSelectedText, question: aiQuestion }, ...prev]);
+        }
+    }
+
+    // AI query (new selection — clears history)
     async function handleAIQuery(providerID: string) {
         if (!popup) return;
         const { text } = popup;
         const question = popupQuestion;
         const provider = settingsProviders.find(p => p.id === providerID);
         setPopup(null);
+        setAiHistory([]);
         setAiLoading(true);
         setViewMode('ai');
         setAiResponse('');
         setAiError('');
         setAiProviderName(provider?.name ?? providerID);
+        setAiSelectedText(text);
+        setAiQuestion(question);
+        setAiProviderId(providerID);
         try {
             const result = await QueryAI(text, question, providerID);
+            setAiResponse(result);
+        } catch (err: any) {
+            setAiError(`エラー: ${err?.message ?? err}`);
+        } finally {
+            setAiLoading(false);
+        }
+    }
+
+    // Re-submit (same selection — keeps history)
+    async function handleResubmitAI(providerID: string) {
+        const provider = settingsProviders.find(p => p.id === providerID);
+        pushToHistory(aiProviderName, aiResponse, aiError);
+        setAiLoading(true);
+        setAiResponse('');
+        setAiError('');
+        setAiProviderName(provider?.name ?? providerID);
+        setAiProviderId(providerID);
+        try {
+            const result = await QueryAI(aiSelectedText, aiQuestion, providerID);
             setAiResponse(result);
         } catch (err: any) {
             setAiError(`エラー: ${err?.message ?? err}`);
@@ -379,21 +494,24 @@ function App() {
     // Menu events
     useEffect(() => {
         const offs = [
-            EventsOn('menu:about',     () => setShowAbout(true)),
-            EventsOn('menu:new',       () => handleNew()),
-            EventsOn('menu:open',      () => handleOpen()),
-            EventsOn('menu:settings',  () => setShowSettings(true)),
-            EventsOn('menu:save',      () => handleSave()),
-            EventsOn('menu:saveAs',    () => handleSaveAs()),
-            EventsOn('menu:undo',      () => doUndo()),
-            EventsOn('menu:redo',      () => doRedo()),
-            EventsOn('menu:cut',       () => doCut()),
-            EventsOn('menu:copy',      () => doCopy()),
-            EventsOn('menu:paste',     () => doPaste()),
-            EventsOn('menu:selectAll', () => doSelectAll()),
-            EventsOn('menu:find',      () => openFind()),
-            EventsOn('menu:findNext',  () => findNext()),
-            EventsOn('menu:replace',   () => openReplace()),
+            EventsOn('menu:about',             () => setShowAbout(true)),
+            EventsOn('menu:new',               () => handleNew()),
+            EventsOn('menu:open',              () => handleOpen()),
+            EventsOn('menu:settings',          () => setShowSettings(true)),
+            EventsOn('menu:save',              () => handleSave()),
+            EventsOn('menu:saveAs',            () => handleSaveAs()),
+            EventsOn('menu:undo',              () => doUndo()),
+            EventsOn('menu:redo',              () => doRedo()),
+            EventsOn('menu:cut',               () => doCut()),
+            EventsOn('menu:copy',              () => doCopy()),
+            EventsOn('menu:paste',             () => doPaste()),
+            EventsOn('menu:selectAll',         () => doSelectAll()),
+            EventsOn('menu:find',              () => openFind()),
+            EventsOn('menu:findNext',          () => findNext()),
+            EventsOn('menu:replace',           () => openReplace()),
+            EventsOn('menu:toggleLineNumbers', () => setShowLineNumbers(v => !v)),
+            EventsOn('menu:togglePreview',     () => setShowPreview(v => !v)),
+            EventsOn('file:open',              (path: string) => handleOpenPath(path)),
         ];
         return () => offs.forEach(off => off());
     }, []);
@@ -417,6 +535,10 @@ function App() {
         if (e.key === 'a') { e.preventDefault(); doSelectAll(); return; }
     }
 
+    const charCount = markdown.length;
+    const sectionCount = markdown.split('\n').filter(l => /^#{1,6}\s/.test(l)).length;
+    const lines = markdown.split('\n');
+
     const tabStyle = (mode: ViewMode) => ({
         flex: 1, padding: '4px', border: 'none',
         borderBottom: viewMode === mode ? '2px solid #2563eb' : '2px solid transparent',
@@ -433,7 +555,7 @@ function App() {
                     onMouseDown={() => setShowAbout(false)}>
                     <div style={{ background: '#fff', borderRadius: '12px', padding: '32px 40px', width: '320px', textAlign: 'center', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}
                         onMouseDown={e => e.stopPropagation()}>
-                        <img src={appIcon} alt="SIRANAI" style={{ width: '80px', height: '80px', borderRadius: '18px', marginBottom: '16px' }} />
+                        <div style={{ width: '80px', height: '80px', borderRadius: '18px', backgroundImage: `url(${appIcon})`, backgroundSize: 'cover', backgroundPosition: 'center', margin: '0 auto 16px' }} />
                         <h2 style={{ margin: '0 0 4px', fontSize: '22px' }}>SIRANAI</h2>
                         <p style={{ margin: '0 0 4px', color: '#555', fontSize: '13px' }}>Think · Ask · Organize</p>
                         <p style={{ margin: '0 0 20px', color: '#888', fontSize: '12px' }}>Version {APP_VERSION}</p>
@@ -550,6 +672,11 @@ function App() {
                 );
             })()}
 
+            {/* Top bar */}
+            <div style={{ height: '22px', display: 'flex', alignItems: 'center', padding: '0 10px', background: '#f3f4f6', borderBottom: '1px solid #e5e7eb', fontSize: '11px', color: '#9ca3af', flexShrink: 0, userSelect: 'none' }}>
+                <span style={{ marginLeft: 'auto' }}>v{APP_VERSION}</span>
+            </div>
+
             {/* Search / Replace panel */}
             {showSearch && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 10px', borderBottom: '1px solid #ccc', background: '#fffbe6' }}>
@@ -568,10 +695,19 @@ function App() {
             )}
 
             {/* Editor + Right pane */}
-            <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', borderRight: '1px solid #ccc' }}>
+            <div ref={containerRef} style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+                <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
                     {/* Editor area */}
-                    <div style={{ flex: 1, position: 'relative' }}>
+                    <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+                        {showLineNumbers && (
+                            <div
+                                ref={lineNumbersRef}
+                                style={{ width: '44px', overflowY: 'hidden', textAlign: 'right', padding: '10px 6px 10px 0', fontSize: '16px', lineHeight: '1.5', fontFamily: 'monospace', color: '#9ca3af', background: '#f9fafb', borderRight: '1px solid #e5e7eb', userSelect: 'none', flexShrink: 0 }}
+                            >
+                                {lines.map((_, i) => <div key={i}>{i + 1}</div>)}
+                            </div>
+                        )}
+                        <div style={{ flex: 1, position: 'relative' }}>
                         <textarea
                             ref={textareaRef}
                             value={markdown}
@@ -579,6 +715,9 @@ function App() {
                             onKeyDown={handleKeyDown}
                             onMouseDown={() => { isSelectingRef.current = true; }}
                             onScroll={handleTextareaScroll}
+                            onClick={updateCursorLine}
+                            onKeyUp={updateCursorLine}
+                            onSelect={updateCursorLine}
                             style={{ position: 'absolute', inset: 0, padding: '10px', fontSize: '16px', lineHeight: '1.5', resize: 'none', fontFamily: 'monospace', border: 'none', outline: 'none', background: 'transparent', boxSizing: 'border-box', width: '100%', height: '100%' }}
                             placeholder="Enter your markdown here..."
                         />
@@ -594,6 +733,7 @@ function App() {
                                 {markdown.substring(aiHighlight.end)}
                             </div>
                         )}
+                        </div>
                     </div>
                     {/* Encoding status bar */}
                     <div style={{ position: 'relative', height: '24px', display: 'flex', alignItems: 'center', padding: '0 8px', background: '#f3f4f6', borderTop: '1px solid #e5e7eb', fontSize: '11px', color: '#6b7280' }}>
@@ -634,15 +774,19 @@ function App() {
                     </div>
                 </div>
 
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                {showPreview && <>
+                    {/* Resize handle */}
+                    <div
+                        onMouseDown={startResize}
+                        style={{ width: '5px', flexShrink: 0, cursor: 'col-resize', background: '#e5e7eb', borderLeft: '1px solid #d1d5db' }}
+                    />
+                    <div style={rightPaneWidth ? { width: rightPaneWidth, flexShrink: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' } : { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                     {/* Tab bar */}
-                    <div style={{ display: 'flex', borderBottom: '1px solid #eee', background: '#fafafa' }}>
+                    <div style={{ display: 'flex', borderBottom: '1px solid #eee', background: '#fafafa', userSelect: 'none' }}>
                         <button style={tabStyle('preview')} onClick={() => setViewMode('preview')}>Preview</button>
                         <button style={tabStyle('ai')} onClick={() => setViewMode('ai')}>
                             AI {aiLoading ? '⏳' : aiResponse ? '●' : ''}
                         </button>
-                        <button onClick={() => setShowSettings(true)}
-                            style={{ padding: '4px 8px', border: 'none', background: 'none', cursor: 'pointer', fontSize: '14px' }} title="設定">⚙</button>
                     </div>
 
                     {/* Preview */}
@@ -654,19 +798,10 @@ function App() {
 
                     {/* AI response */}
                     {viewMode === 'ai' && (
-                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                            {(aiResponse || aiError || aiLoading) && (
-                                <div style={{ padding: '4px 8px', borderBottom: '1px solid #eee', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                    {aiProviderName && <span style={{ fontSize: '11px', color: '#6b7280', flex: 1 }}>{aiProviderName}</span>}
-                                    {(aiResponse || aiError) && !aiLoading && (
-                                        <button
-                                            onClick={() => ClipboardSetText(aiResponse || aiError)}
-                                            style={{ fontSize: '12px', padding: '2px 8px', cursor: 'pointer', marginLeft: 'auto' }}
-                                        >コピー</button>
-                                    )}
-                                </div>
-                            )}
+                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', userSelect: 'none' }}>
+                            {/* Response area — text selection enabled (overrides parent userSelect:none) */}
                             <div
+                                ref={aiResponseAreaRef}
                                 tabIndex={0}
                                 onKeyDown={async e => {
                                     if ((e.metaKey || e.ctrlKey) && e.key === 'c') {
@@ -675,22 +810,97 @@ function App() {
                                         if (sel) await ClipboardSetText(sel);
                                     }
                                 }}
-                                style={{ flex: 1, padding: '10px', overflowY: 'auto', textAlign: 'left', outline: 'none', userSelect: 'text' }}
+                                style={{ flex: 1, padding: '10px', overflowY: 'auto', textAlign: 'left', outline: 'none', userSelect: 'text', cursor: 'text' }}
                             >
-                                {aiLoading && <p style={{ color: '#888' }}>AIに問い合わせ中...</p>}
-                                {!aiLoading && !aiResponse && !aiError && (
-                                    <p style={{ color: '#aaa', fontSize: '13px' }}>テキストを選択して「AIに聞く」を押すと結果がここに表示されます。</p>
+                                {!aiLoading && !aiResponse && !aiError && !aiHistory.length && (
+                                    <p style={{ color: '#aaa', fontSize: '13px', userSelect: 'none' }}>テキストを選択して「AIに聞く」を押すと結果がここに表示されます。</p>
                                 )}
-                                {!aiLoading && aiError && (
-                                    <p style={{ color: '#dc2626', whiteSpace: 'pre-wrap' }}>{aiError}</p>
-                                )}
-                                {!aiLoading && aiResponse && (
-                                    <div dangerouslySetInnerHTML={{ __html: marked(aiResponse) as string }} />
+                                {/* History — oldest first (aiHistory[0] is most recent, so render reversed) */}
+                                {[...aiHistory].reverse().map((entry, i) => (
+                                    <div key={i} style={{ marginBottom: '16px', paddingBottom: '12px', borderBottom: '1px dashed #d1d5db' }}>
+                                        <div style={{ fontSize: '11px', fontWeight: 700, color: '#374151', marginBottom: '2px', userSelect: 'none' }}>質問文言</div>
+                                        <p style={{ fontSize: '13px', color: '#4b5563', margin: '0 0 4px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                                            {(entry.selectedText || '').length > 120 ? (entry.selectedText || '').substring(0, 120) + '…' : (entry.selectedText || '')}
+                                            {entry.question && <span style={{ color: '#6b7280' }}>　— {entry.question}</span>}
+                                        </p>
+                                        <div style={{ fontSize: '11px', fontWeight: 700, color: '#374151', marginBottom: '2px', userSelect: 'none' }}>
+                                            結果 <span style={{ fontWeight: 400, color: '#9ca3af' }}>{entry.providerName}</span>
+                                        </div>
+                                        {entry.error && <p style={{ color: '#dc2626', whiteSpace: 'pre-wrap' }}>{entry.error}</p>}
+                                        {entry.response && <div dangerouslySetInnerHTML={{ __html: marked(entry.response) as string }} />}
+                                    </div>
+                                ))}
+                                {/* Current query — always at bottom (newest) */}
+                                {(aiLoading || aiResponse || aiError) && (
+                                    <div>
+                                        <div style={{ fontSize: '11px', fontWeight: 700, color: '#374151', marginBottom: '2px', userSelect: 'none' }}>質問文言</div>
+                                        <p style={{ fontSize: '13px', color: '#4b5563', margin: '0 0 4px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                                            {aiSelectedText.length > 120 ? aiSelectedText.substring(0, 120) + '…' : aiSelectedText}
+                                            {aiQuestion && <span style={{ color: '#6b7280' }}>　— {aiQuestion}</span>}
+                                        </p>
+                                        <div style={{ fontSize: '11px', fontWeight: 700, color: '#374151', marginBottom: '2px', userSelect: 'none' }}>
+                                            結果 <span style={{ fontWeight: 400, color: '#9ca3af' }}>{aiProviderName}</span>
+                                        </div>
+                                        {aiLoading && <p style={{ color: '#888', userSelect: 'none' }}>AIに問い合わせ中...</p>}
+                                        {!aiLoading && aiError && <p style={{ color: '#dc2626', whiteSpace: 'pre-wrap' }}>{aiError}</p>}
+                                        {!aiLoading && aiResponse && <div dangerouslySetInnerHTML={{ __html: marked(aiResponse) as string }} />}
+                                    </div>
                                 )}
                             </div>
+                            {/* Prompt editor — shown after first query */}
+                            {aiSelectedText && (
+                                <div style={{ borderTop: '1px solid #e5e7eb', padding: '8px', background: '#f9fafb', flexShrink: 0, userSelect: 'none' }}>
+                                    <div style={{ display: 'flex', gap: '4px', alignItems: 'flex-start' }}>
+                                        <textarea
+                                            value={aiQuestion}
+                                            onChange={e => setAiQuestion(e.target.value)}
+                                            onKeyDown={async e => {
+                                                const meta = e.metaKey || e.ctrlKey;
+                                                if (meta && e.key === 'v') {
+                                                    e.preventDefault();
+                                                    // capture DOM ref and positions BEFORE await (e.currentTarget becomes null after await)
+                                                    const ta = e.currentTarget as HTMLTextAreaElement;
+                                                    const start = ta.selectionStart ?? 0;
+                                                    const end = ta.selectionEnd ?? 0;
+                                                    const text = await ClipboardGetText();
+                                                    if (!text) return;
+                                                    setAiQuestion(q => q.substring(0, start) + text + q.substring(end));
+                                                    requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = start + text.length; });
+                                                    return;
+                                                }
+                                                if (meta && e.key === 'a') { e.preventDefault(); e.currentTarget.select(); return; }
+                                                if (meta && e.key === 'Enter' && !aiLoading) {
+                                                    e.preventDefault();
+                                                    handleResubmitAI(aiProviderId || (settingsProviders.find(p => p.enabled && p.apiKey)?.id ?? ''));
+                                                }
+                                            }}
+                                            placeholder="質問を編集して再送信... (⌘Enter)"
+                                            rows={2}
+                                            style={{ flex: 1, fontSize: '12px', padding: '4px 6px', border: '1px solid #d1d5db', borderRadius: '4px', resize: 'vertical', fontFamily: 'system-ui', minHeight: '40px' }}
+                                        />
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                            {settingsProviders.filter(p => p.enabled && p.apiKey).map(p => (
+                                                <button
+                                                    key={p.id}
+                                                    disabled={aiLoading}
+                                                    onClick={() => handleResubmitAI(p.id)}
+                                                    style={{ fontSize: '11px', padding: '3px 8px', background: aiProviderId === p.id ? '#1d4ed8' : '#2563eb', color: '#fff', border: 'none', borderRadius: '3px', cursor: aiLoading ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap', opacity: aiLoading ? 0.6 : 1 }}
+                                                >{p.name}</button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     )}
-                </div>
+                </div></>}
+            </div>
+
+            {/* Status bar */}
+            <div style={{ height: '22px', display: 'flex', alignItems: 'center', padding: '0 12px', background: '#e5e7eb', borderTop: '1px solid #d1d5db', fontSize: '11px', color: '#6b7280', gap: '16px', flexShrink: 0 }}>
+                <span>行: {cursorLine}</span>
+                <span>文字: {charCount.toLocaleString()}</span>
+                <span>セクション: {sectionCount}</span>
             </div>
         </div>
     );

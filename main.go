@@ -84,6 +84,15 @@ func main() {
 		runtime.EventsEmit(app.ctx, "menu:replace")
 	})
 
+	// View menu
+	viewMenu := appMenu.AddSubmenu("表示")
+	viewMenu.AddText("行番号を表示/非表示", keys.Combo("l", keys.CmdOrCtrlKey, keys.ShiftKey), func(_ *menu.CallbackData) {
+		runtime.EventsEmit(app.ctx, "menu:toggleLineNumbers")
+	})
+	viewMenu.AddText("プレビューを表示/非表示", keys.Combo("p", keys.CmdOrCtrlKey, keys.ShiftKey), func(_ *menu.CallbackData) {
+		runtime.EventsEmit(app.ctx, "menu:togglePreview")
+	})
+
 	err := wails.Run(&options.App{
 		Title:            "SIRANAI",
 		Width:            1024,
@@ -97,6 +106,17 @@ func main() {
 			Appearance:           mac.DefaultAppearance,
 			WebviewIsTransparent: false,
 			WindowIsTranslucent:  false,
+			OnFileOpen: func(filePath string) {
+				if app.frontendReady {
+					// Frontend is loaded and listening — bring to front and emit directly
+					runtime.WindowShow(app.ctx)
+					runtime.EventsEmit(app.ctx, "file:open", filePath)
+				} else {
+					// App just launched via file association; frontend not ready yet.
+					// Store the path and let GetPendingFilePath() deliver it on mount.
+					app.pendingFilePath = filePath
+				}
+			},
 		},
 		OnStartup: app.startup,
 		Menu:      appMenu,
