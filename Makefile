@@ -17,6 +17,8 @@ build:
 	~/go/bin/wails build
 
 bundle-libs: build
+	@echo "==> Adding ja.lproj for Japanese localization..."
+	@mkdir -p $(APP_PATH)/Contents/Resources/ja.lproj
 	@echo "==> Bundling libmecab into app..."
 	@mkdir -p $(APP_PATH)/Contents/Frameworks
 	@cp /opt/homebrew/opt/mecab/lib/libmecab.2.dylib $(APP_PATH)/Contents/Frameworks/

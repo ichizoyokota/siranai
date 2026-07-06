@@ -1,3 +1,31 @@
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+@keyframes ellipsis {
+    0%   { content: ''; }
+    33%  { content: '.'; }
+    66%  { content: '..'; }
+    100% { content: '...'; }
+}
+
+.ai-spinner {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid #d1d5db;
+    border-top-color: #2563eb;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    vertical-align: middle;
+    margin-right: 6px;
+    flex-shrink: 0;
+}
+
+.ai-loading-dots::after {
+    content: '';
+    animation: ellipsis 1.5s steps(1) infinite;
+}
+
 #app {
     height: 100vh;
     text-align: center;
@@ -56,4 +84,26 @@
 .input-box .input:focus {
     border: none;
     background-color: rgba(255, 255, 255, 1);
+}
+
+/* Markdown preview table styles */
+.md-preview table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1em 0;
+    font-size: 0.95em;
+}
+.md-preview th,
+.md-preview td {
+    border: 1px solid var(--line-num-border, #e5e7eb);
+    padding: 6px 12px;
+    text-align: left;
+}
+.md-preview th {
+    background: var(--line-num-bg, #f9fafb);
+    font-weight: 600;
+}
+.md-preview tr:nth-child(even) td {
+    background: var(--line-num-bg, #f9fafb);
+    opacity: 0.6;
 }

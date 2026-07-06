@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 
 	"github.com/wailsapp/wails/v2"
@@ -101,6 +102,9 @@ func main() {
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
+		DragAndDrop: &options.DragAndDrop{
+			EnableFileDrop: true,
+		},
 		Mac: &mac.Options{
 			TitleBar:             mac.TitleBarDefault(),
 			Appearance:           mac.DefaultAppearance,
@@ -119,7 +123,21 @@ func main() {
 			},
 		},
 		OnStartup: app.startup,
-		Menu:      appMenu,
+		OnBeforeClose: func(ctx context.Context) bool {
+			if !app.isDirty {
+				return false // allow close
+			}
+			result, _ := runtime.MessageDialog(ctx, runtime.MessageDialogOptions{
+				Type:          runtime.QuestionDialog,
+				Title:         "未保存の変更があります",
+				Message:       "保存されていない変更があります。閉じますか？",
+				Buttons:       []string{"閉じる", "キャンセル"},
+				DefaultButton: "キャンセル",
+				CancelButton:  "キャンセル",
+			})
+			return result == "キャンセル" // true = prevent close
+		},
+		Menu: appMenu,
 		Bind: []interface{}{
 			app,
 		},

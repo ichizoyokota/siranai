@@ -260,6 +260,12 @@ type App struct {
 	ctx             context.Context
 	pendingFilePath string
 	frontendReady   bool
+	isDirty         bool
+}
+
+// SetDirty is called by the frontend to report unsaved-change state.
+func (a *App) SetDirty(dirty bool) {
+	a.isDirty = dirty
 }
 
 // NewApp creates a new App application struct
@@ -272,6 +278,15 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	// pendingFilePath is fetched by the frontend via GetPendingFilePath() on mount
+
+	// Handle file drops from Finder/OS onto the app window.
+	// The frontend decides open-vs-insert based on the Shift key it tracks.
+	runtime.OnFileDrop(ctx, func(x, y int, paths []string) {
+		if len(paths) == 0 {
+			return
+		}
+		runtime.EventsEmit(ctx, "file:drop", paths)
+	})
 }
 
 // GetPendingFilePath marks the frontend as ready and returns any file path
