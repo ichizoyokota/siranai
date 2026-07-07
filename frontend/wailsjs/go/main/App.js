@@ -22,6 +22,14 @@ export function OpenFileByPath(arg1) {
   return window['go']['main']['App']['OpenFileByPath'](arg1);
 }
 
+export function PrintHTML(arg1) {
+  return window['go']['main']['App']['PrintHTML'](arg1);
+}
+
+export function PrintText(arg1) {
+  return window['go']['main']['App']['PrintText'](arg1);
+}
+
 export function QueryAI(arg1, arg2, arg3) {
   return window['go']['main']['App']['QueryAI'](arg1, arg2, arg3);
 }

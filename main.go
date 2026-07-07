@@ -50,6 +50,13 @@ func main() {
 	fileMenu.AddText("Save As...", keys.Combo("s", keys.CmdOrCtrlKey, keys.ShiftKey), func(_ *menu.CallbackData) {
 		runtime.EventsEmit(app.ctx, "menu:saveAs")
 	})
+	fileMenu.AddSeparator()
+	fileMenu.AddText("Print... (プレビュー)", keys.CmdOrCtrl("p"), func(_ *menu.CallbackData) {
+		runtime.EventsEmit(app.ctx, "menu:print")
+	})
+	fileMenu.AddText("Print... (テキスト)", nil, func(_ *menu.CallbackData) {
+		runtime.EventsEmit(app.ctx, "menu:printText")
+	})
 
 	// Edit menu
 	editMenu := appMenu.AddSubmenu("Edit")

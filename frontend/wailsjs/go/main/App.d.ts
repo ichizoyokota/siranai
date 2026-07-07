@@ -12,6 +12,10 @@ export function OpenFile():Promise<Record<string, string>>;
 
 export function OpenFileByPath(arg1:string):Promise<Record<string, string>>;
 
+export function PrintHTML(arg1:string):Promise<void>;
+
+export function PrintText(arg1:string):Promise<void>;
+
 export function QueryAI(arg1:string,arg2:string,arg3:string):Promise<string>;
 
 export function ReopenWithEncoding(arg1:string,arg2:string):Promise<Record<string, string>>;

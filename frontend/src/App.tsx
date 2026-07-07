@@ -2,7 +2,7 @@ import {useEffect, useLayoutEffect, useRef, useState} from 'react';
 import appIcon from './assets/images/appicon.png';
 import {marked} from 'marked';
 marked.setOptions({ gfm: true, breaks: false });
-import {GetDisplayName, GetPendingFilePath, LoadSettings, OpenFile, OpenFileByPath, QueryAI, ReopenWithEncoding, SaveFile, SaveFileWithEncoding, SaveSettings, SetDirty} from '../wailsjs/go/main/App';
+import {GetDisplayName, GetPendingFilePath, LoadSettings, OpenFile, OpenFileByPath, PrintHTML, PrintText, QueryAI, ReopenWithEncoding, SaveFile, SaveFileWithEncoding, SaveSettings, SetDirty} from '../wailsjs/go/main/App';
 import {ClipboardGetText, ClipboardSetText, EventsOn, WindowSetTitle} from '../wailsjs/runtime/runtime';
 import './App.css';
 
@@ -69,7 +69,7 @@ interface AIProviderConfig {
     enabled: boolean;
 }
 
-const APP_VERSION = '0.1.2';
+const APP_VERSION = '0.1.3';
 
 const PROVIDER_MODELS: Record<string, string[]> = {
     gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite', 'gemini-flash-latest', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'],
@@ -613,6 +613,26 @@ function App() {
         setSettingsProviders(prev => prev.map((p, i) => i === index ? { ...p, [field]: value } : p));
     }
 
+    function handlePrintText() {
+        void PrintText(markdownRef.current);
+    }
+
+    function handlePrint() {
+        const html = marked(markdownRef.current) as string;
+        const title = filePathRef.current ? filePathRef.current.split('/').pop() || 'SIRANAI' : 'SIRANAI';
+        const fullHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title><style>
+            body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:800px;margin:0 auto;padding:20px;line-height:1.6;color:#111;}
+            table{border-collapse:collapse;width:100%;margin:1em 0;}
+            th,td{border:1px solid #d1d5db;padding:6px 12px;text-align:left;}
+            th{background:#f9fafb;font-weight:600;}
+            pre{background:#f9fafb;padding:12px;border-radius:4px;overflow:auto;}
+            code{font-family:monospace;font-size:0.9em;}
+            blockquote{border-left:4px solid #e5e7eb;margin:0;padding-left:16px;color:#6b7280;}
+            h1,h2,h3{line-height:1.3;}img{max-width:100%;}
+        </style></head><body>${html}</body></html>`;
+        void PrintHTML(fullHtml);
+    }
+
     // Menu events
     useEffect(() => {
         const offs = [
@@ -631,6 +651,8 @@ function App() {
             EventsOn('menu:find',              () => openFind()),
             EventsOn('menu:findNext',          () => findNext()),
             EventsOn('menu:replace',           () => openReplace()),
+            EventsOn('menu:print',             () => handlePrint()),
+            EventsOn('menu:printText',         () => handlePrintText()),
             EventsOn('menu:toggleLineNumbers', () => setShowLineNumbers(v => !v)),
             EventsOn('menu:togglePreview',     () => setShowPreview(v => !v)),
             EventsOn('file:open',              (path: string) => handleOpenPath(path)),
@@ -1101,15 +1123,15 @@ function App() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 10px', borderBottom: '1px solid var(--search-border)', background: 'var(--search-bg)', color: 'var(--editor-text)' }}>
                     <input ref={searchInputRef} value={searchText} onChange={e => setSearchText(e.target.value)}
                         onKeyDown={e => { if (e.key === 'Enter') findNext(); if (e.key === 'Escape') closeSearch(); }}
-                        placeholder="検索..." style={{ padding: '2px 6px', width: '180px' }} />
+                        placeholder="検索..." style={{ padding: '2px 6px', width: '180px', background: 'var(--input-bg)', color: 'var(--editor-text)', border: '1px solid var(--input-border)', borderRadius: '3px' }} />
                     {showReplace && (
                         <input value={replaceText} onChange={e => setReplaceText(e.target.value)}
                             onKeyDown={e => { if (e.key === 'Escape') closeSearch(); }}
-                            placeholder="置換..." style={{ padding: '2px 6px', width: '180px' }} />
+                            placeholder="置換..." style={{ padding: '2px 6px', width: '180px', background: 'var(--input-bg)', color: 'var(--editor-text)', border: '1px solid var(--input-border)', borderRadius: '3px' }} />
                     )}
-                    <button onClick={findNext}>次へ</button>
-                    {showReplace && (<><button onClick={doReplace}>置換</button><button onClick={doReplaceAll}>すべて置換</button></>)}
-                    <button onClick={closeSearch} style={{ marginLeft: 'auto' }}>✕</button>
+                    <button onClick={findNext} style={{ padding: '2px 8px', background: 'var(--input-bg)', color: 'var(--editor-text)', border: '1px solid var(--input-border)', borderRadius: '3px', cursor: 'pointer', fontSize: '12px' }}>次へ</button>
+                    {showReplace && (<><button onClick={doReplace} style={{ padding: '2px 8px', background: 'var(--input-bg)', color: 'var(--editor-text)', border: '1px solid var(--input-border)', borderRadius: '3px', cursor: 'pointer', fontSize: '12px' }}>置換</button><button onClick={doReplaceAll} style={{ padding: '2px 8px', background: 'var(--input-bg)', color: 'var(--editor-text)', border: '1px solid var(--input-border)', borderRadius: '3px', cursor: 'pointer', fontSize: '12px' }}>すべて置換</button></>)}
+                    <button onClick={closeSearch} style={{ marginLeft: 'auto', padding: '2px 8px', background: 'var(--input-bg)', color: 'var(--editor-text)', border: '1px solid var(--input-border)', borderRadius: '3px', cursor: 'pointer', fontSize: '12px' }}>✕</button>
                 </div>
             )}
 
@@ -1167,12 +1189,12 @@ function App() {
                         <button
                             id="encoding-btn"
                             onClick={() => setShowEncodingMenu(v => !v)}
-                            style={{ fontSize: '11px', padding: '1px 6px', border: '1px solid #d1d5db', borderRadius: '3px', background: '#fff', cursor: 'pointer', color: '#374151' }}
+                            style={{ fontSize: '11px', padding: '1px 6px', border: '1px solid var(--input-border)', borderRadius: '3px', background: 'var(--input-bg)', cursor: 'pointer', color: 'var(--input-text)' }}
                         >{fileEncoding} ▾</button>
                         <button
                             onClick={() => setShowTableDialog(true)}
                             title="テーブルを挿入"
-                            style={{ fontSize: '11px', padding: '1px 6px', border: '1px solid #d1d5db', borderRadius: '3px', background: '#fff', cursor: 'pointer', color: '#374151', marginLeft: '8px' }}
+                            style={{ fontSize: '11px', padding: '1px 6px', border: '1px solid var(--input-border)', borderRadius: '3px', background: 'var(--input-bg)', cursor: 'pointer', color: 'var(--input-text)', marginLeft: '8px' }}
                         >⊞ テーブル</button>
                         {showEncodingMenu && (
                             <div
@@ -1286,7 +1308,7 @@ function App() {
                             </div>
                             {/* Prompt editor — shown after first query */}
                             {aiSelectedText && (
-                                <div style={{ borderTop: '1px solid #e5e7eb', padding: '8px', background: '#f9fafb', flexShrink: 0, userSelect: 'none' }}>
+                                <div style={{ borderTop: '1px solid var(--tab-bar-border)', padding: '8px', background: 'var(--encoding-bg)', flexShrink: 0, userSelect: 'none' }}>
                                     <div style={{ display: 'flex', gap: '4px', alignItems: 'flex-start' }}>
                                         <textarea
                                             value={aiQuestion}
@@ -1313,7 +1335,7 @@ function App() {
                                             }}
                                             placeholder="質問を編集して再送信... (⌘Enter)"
                                             rows={2}
-                                            style={{ flex: 1, fontSize: '12px', padding: '4px 6px', border: '1px solid #d1d5db', borderRadius: '4px', resize: 'vertical', fontFamily: 'system-ui', minHeight: '40px' }}
+                                            style={{ flex: 1, fontSize: '12px', padding: '4px 6px', border: '1px solid var(--input-border)', borderRadius: '4px', resize: 'vertical', fontFamily: 'system-ui', minHeight: '40px', background: 'var(--input-bg)', color: 'var(--input-text)' }}
                                         />
                                         <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                                             {settingsProviders.filter(p => p.enabled && p.apiKey).map(p => (
