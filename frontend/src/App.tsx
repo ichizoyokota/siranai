@@ -71,7 +71,7 @@ interface AIProviderConfig {
     enabled: boolean;
 }
 
-const APP_VERSION = '0.1.3';
+const APP_VERSION = '0.1.4';
 
 const PROVIDER_MODELS: Record<string, string[]> = {
     gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite', 'gemini-flash-latest', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'],
