@@ -44,3 +44,5 @@ dist/
 # Temporary files
 *.md.tmp
 sparkling-*.md
+1Gi.txt
+*.log
