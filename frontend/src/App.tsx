@@ -113,11 +113,37 @@ function makeTabId(): string {
     return `tab-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 }
 
-function makeInitialTab(): TabState {
+function getNextUntitledNumber(currentTabs: TabState[]): number {
+    let maxNum = 0;
+    currentTabs.forEach(tab => {
+        if (tab.displayName.match(/^Untitled(\s\d+)?$/)) {
+            if (tab.displayName === 'Untitled') {
+                maxNum = Math.max(maxNum, 1);
+            } else {
+                const match = tab.displayName.match(/^Untitled (\d+)$/);
+                if (match) {
+                    maxNum = Math.max(maxNum, parseInt(match[1]));
+                }
+            }
+        }
+    });
+    return maxNum + 1;
+}
+
+function getDisplayName(tabs: TabState[], filePath: string): string {
+    if (filePath) {
+        return filePath.split('/').pop() || 'File';
+    }
+    const nextNum = getNextUntitledNumber(tabs);
+    return nextNum === 1 ? 'Untitled' : `Untitled ${nextNum}`;
+}
+
+function makeInitialTab(existingTabs?: TabState[]): TabState {
+    const displayName = getDisplayName(existingTabs || [], '');
     return {
         id: makeTabId(),
         filePath: '',
-        displayName: '',
+        displayName,
         content: INITIAL_CONTENT,
         fileEncoding: 'UTF-8',
         isDirty: false,
@@ -401,7 +427,7 @@ function App() {
     function doRedo() { editorRef.current?.trigger('keyboard', 'redo', null); }
 
     function handleNew() {
-        const newTab = makeInitialTab();
+        const newTab = makeInitialTab(tabs);
         setTabs([...tabs, newTab]);
         
         // Create model for new tab
@@ -439,6 +465,7 @@ function App() {
     }
 
     function applyFileResultToTab(tabId: string, result: { path: string; content: string; encoding: string }) {
+        const displayName = getDisplayName(tabs, result.path);
         const updatedTabs = tabs.map(t => {
             if (t.id === tabId) {
                 return {
@@ -447,7 +474,7 @@ function App() {
                     content: result.content,
                     fileEncoding: result.encoding ?? 'UTF-8',
                     isDirty: false,
-                    displayName: result.path.split('/').pop() || 'Untitled',
+                    displayName,
                     charCount: result.content.length,
                     sectionCount: result.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length,
                 };
@@ -487,11 +514,11 @@ function App() {
             applyFileResultToTab(activeTab.id, { path: result.path, content: result.content, encoding: result.encoding ?? 'UTF-8' });
         } else {
             // Open in new tab
-            const newTab = makeInitialTab();
+            const newTab = makeInitialTab(tabs);
             newTab.filePath = result.path;
             newTab.content = result.content;
             newTab.fileEncoding = result.encoding ?? 'UTF-8';
-            newTab.displayName = result.path.split('/').pop() || 'Untitled';
+            newTab.displayName = getDisplayName(tabs, result.path);
             newTab.isDirty = false;
             newTab.charCount = result.content.length;
             newTab.sectionCount = result.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length;
@@ -544,9 +571,10 @@ function App() {
             : await SaveFile('', content);
         
         if (savedPath) {
+            const displayName = getDisplayName(tabs, savedPath);
             const updatedTabs = tabs.map(t => {
                 if (t.id === activeTab.id) {
-                    return { ...t, filePath: savedPath, isDirty: false, displayName: savedPath.split('/').pop() || 'Untitled' };
+                    return { ...t, filePath: savedPath, isDirty: false, displayName };
                 }
                 return t;
             });
@@ -580,11 +608,11 @@ function App() {
                 applyFileResultToTab(activeTab.id, { path: result.path, content: result.content, encoding: result.encoding ?? 'UTF-8' });
             } else {
                 // Open in new tab
-                const newTab = makeInitialTab();
+                const newTab = makeInitialTab(tabs);
                 newTab.filePath = result.path;
                 newTab.content = result.content;
                 newTab.fileEncoding = result.encoding ?? 'UTF-8';
-                newTab.displayName = result.path.split('/').pop() || 'Untitled';
+                newTab.displayName = getDisplayName(tabs, result.path);
                 newTab.isDirty = false;
                 newTab.charCount = result.content.length;
                 newTab.sectionCount = result.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length;
