@@ -277,6 +277,7 @@ function App() {
         const model = tabModelsRef.current.get(activeTab.id);
         if (model) {
             editor.setModel(model);
+            editor.focus();
         }
         
         // Update state variables for display
@@ -361,20 +362,8 @@ function App() {
     }
 
     function switchToTab(tabId: string) {
-        const tab = tabs.find(t => t.id === tabId);
-        if (!tab) return;
         setActiveTabId(tabId);
-        
-        // Switch Monaco model
-        const editor = editorRef.current;
-        const M = monacoRef.current;
-        if (!editor || !M) return;
-        
-        const model = tabModelsRef.current.get(tabId);
-        if (model) {
-            editor.setModel(model);
-            editor.focus();
-        }
+        // Model switching will happen in useEffect (lines 263-280)
     }
 
     function closeTab(tabId: string) {
@@ -428,27 +417,17 @@ function App() {
 
     function handleNew() {
         const newTab = makeInitialTab(tabs);
-        setTabs([...tabs, newTab]);
         
-        // Create model for new tab
+        // Create model first
         const M = monacoRef.current;
         if (M) {
             const model = M.editor.createModel(newTab.content, 'markdown');
             tabModelsRef.current.set(newTab.id, model);
         }
         
-        // Switch to new tab
+        // Then add tab and switch
+        setTabs(prev => [...prev, newTab]);
         setActiveTabId(newTab.id);
-        
-        // Switch editor to new model
-        const editor = editorRef.current;
-        if (editor && M) {
-            const model = tabModelsRef.current.get(newTab.id);
-            if (model) {
-                editor.setModel(model);
-                editor.focus();
-            }
-        }
     }
 
     function applyFileResult(result: { path: string; content: string; encoding: string }) {
@@ -523,17 +502,16 @@ function App() {
             newTab.charCount = result.content.length;
             newTab.sectionCount = result.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length;
             
-            setTabs([...tabs, newTab]);
-            
-            // Create model
+            // Create model first
             const M = monacoRef.current;
             if (M) {
                 const model = M.editor.createModel(result.content, 'markdown');
                 tabModelsRef.current.set(newTab.id, model);
             }
             
-            // Switch to new tab
-            switchToTab(newTab.id);
+            // Then add tab and switch
+            setTabs(prev => [...prev, newTab]);
+            setActiveTabId(newTab.id);
         }
     }
 
@@ -617,17 +595,16 @@ function App() {
                 newTab.charCount = result.content.length;
                 newTab.sectionCount = result.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length;
                 
-                setTabs([...tabs, newTab]);
-                
-                // Create model
+                // Create model first
                 const M = monacoRef.current;
                 if (M) {
                     const model = M.editor.createModel(result.content, 'markdown');
                     tabModelsRef.current.set(newTab.id, model);
                 }
                 
-                // Switch to new tab
-                switchToTab(newTab.id);
+                // Then add tab and switch
+                setTabs(prev => [...prev, newTab]);
+                setActiveTabId(newTab.id);
             }
         } catch (err: any) {
             console.error('Failed to open file:', err);
@@ -1424,10 +1401,9 @@ function App() {
                 <span style={{ marginLeft: 'auto' }}>v{APP_VERSION}</span>
             </div>
 
-            {/* Step 6: Tab bar - hidden when only 1 tab */}
-            {tabs.length > 1 && (
-                <div style={{ display: 'flex', height: '32px', background: 'var(--tab-bar-bg)', borderBottom: '1px solid var(--tab-bar-border)', overflow: 'x' }}>
-                    {tabs.map(tab => (
+            {/* Step 6: Tab bar - always visible */}
+            <div style={{ display: 'flex', height: '32px', background: 'var(--tab-bar-bg)', borderBottom: '1px solid var(--tab-bar-border)', overflow: 'x' }}>
+                {tabs.map(tab => (
                         <div
                             key={tab.id}
                             className="tab-item"
@@ -1497,7 +1473,6 @@ function App() {
                         </div>
                     ))}
                 </div>
-            )}
 
             {/* Search / Replace panel */}
             {showSearch && (
