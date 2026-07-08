@@ -46,3 +46,4 @@ dist/
 sparkling-*.md
 1Gi.txt
 *.log
+node_modules/
