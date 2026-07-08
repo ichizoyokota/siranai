@@ -579,7 +579,9 @@ func (a *App) OpenFile() (map[string]string, error) {
 
 // SaveFile saves content to the given path, or opens a save dialog if path is empty
 func (a *App) SaveFile(path string, content string) (string, error) {
+	fmt.Printf("[DEBUG SaveFile] INPUT: path=%q (len=%d, empty=%v), content_len=%d\n", path, len(path), path == "", len(content))
 	if path == "" {
+		fmt.Printf("[DEBUG SaveFile] path is empty, opening SaveFileDialog\n")
 		var err error
 		path, err = runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
 			Title:           "Save File",
@@ -596,9 +598,11 @@ func (a *App) SaveFile(path string, content string) (string, error) {
 			return "", err
 		}
 	}
+	fmt.Printf("[DEBUG SaveFile] Writing to: %q\n", path)
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		return "", err
 	}
+	fmt.Printf("[DEBUG SaveFile] Success: %q\n", path)
 	return path, nil
 }
 
@@ -608,15 +612,18 @@ func (a *App) OpenNewWindow(filePath string) error {
 	if err != nil {
 		return err
 	}
-	
+
+	// Find the .app bundle path (exe is .app/Contents/MacOS/SIRANAI)
+	appBundle := filepath.Dir(filepath.Dir(filepath.Dir(exe)))
+
 	// Use 'open' command on macOS with -n flag to create a new window
 	var cmd *exec.Cmd
 	if filePath != "" {
-		cmd = exec.Command("open", "-n", exe, "--args", filePath)
+		cmd = exec.Command("open", "-n", appBundle, "--args", filePath)
 	} else {
-		cmd = exec.Command("open", "-n", exe)
+		cmd = exec.Command("open", "-n", appBundle)
 	}
-	
+
 	return cmd.Run()
 }
 
@@ -625,7 +632,7 @@ func (a *App) ConfirmCloseTab(displayName string, isDirty bool) (bool, error) {
 	if !isDirty {
 		return true, nil
 	}
-	
+
 	result, err := runtime.MessageDialog(a.ctx, runtime.MessageDialogOptions{
 		Type:          runtime.QuestionDialog,
 		Title:         "Unsaved Changes",
@@ -633,6 +640,6 @@ func (a *App) ConfirmCloseTab(displayName string, isDirty bool) (bool, error) {
 		Buttons:       []string{"Cancel", "Close"},
 		DefaultButton: "Cancel",
 	})
-	
+
 	return result == "Close", err
 }

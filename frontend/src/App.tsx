@@ -254,10 +254,19 @@ function App() {
     const tabModelsRef = useRef<Map<string, Monaco.editor.ITextModel>>(new Map());
     const activeTabIdRef = useRef<string>(activeTabId);
     const tabDragDataRef = useRef<{ tabId: string } | null>(null);
+    const newTabIdRef = useRef<string | null>(null);
 
     useEffect(() => { filePathRef.current = filePath; }, [filePath]);
     useEffect(() => { void SetDirty(isDirty); }, [isDirty]);
     useEffect(() => { activeTabIdRef.current = activeTabId; }, [activeTabId]);
+    
+    // When a new tab ID is pending, switch to it
+    useEffect(() => {
+        if (newTabIdRef.current) {
+            setActiveTabId(newTabIdRef.current);
+            newTabIdRef.current = null;
+        }
+    }, [tabs]);
     
     // Step 2-3: When active tab changes, switch Monaco model and update state
     useEffect(() => {
@@ -367,6 +376,7 @@ function App() {
     }
 
     function closeTab(tabId: string) {
+        // Check if this is the last tab
         if (tabs.length === 1) {
             // Last tab — create new tab instead
             handleNew();
@@ -376,13 +386,12 @@ function App() {
         const tabToClose = tabs.find(t => t.id === tabId);
         if (!tabToClose) return;
         
+        console.log(`closeTab: tabId=${tabId}, isDirty=${tabToClose.isDirty}, displayName=${tabToClose.displayName}`);
+        
         if (tabToClose.isDirty) {
             const confirmed = window.confirm(`"${tabToClose.displayName || 'Untitled'}" has unsaved changes. Close anyway?`);
             if (!confirmed) return;
         }
-        
-        // Remove from tabs list
-        setTabs(tabs.filter(t => t.id !== tabId));
         
         // Destroy model
         const model = tabModelsRef.current.get(tabId);
@@ -391,13 +400,22 @@ function App() {
             tabModelsRef.current.delete(tabId);
         }
         
-        // Switch to another tab if the closed tab was active
-        if (activeTabId === tabId) {
-            const nextTab = tabs.find(t => t.id !== tabId);
-            if (nextTab) {
-                switchToTab(nextTab.id);
+        // Remove from tabs list and switch if needed
+        setTabs(prev => {
+            const newTabs = prev.filter(t => t.id !== tabId);
+            console.log(`setTabs: removed ${tabId}, remaining tabs: ${newTabs.length}`);
+            
+            // If the closed tab was active, switch to another tab
+            if (activeTabId === tabId) {
+                const nextTab = newTabs[0];
+                console.log(`activeTab was closed, switching to: ${nextTab?.id}`);
+                if (nextTab) {
+                    newTabIdRef.current = nextTab.id;
+                }
             }
-        }
+            
+            return newTabs;
+        });
     }
 
     function schedulePreviewUpdate() {
@@ -417,8 +435,12 @@ function App() {
 
     function handleNew() {
         // Use functional update to get the latest tabs
+        let newTabId = '';
+        
         setTabs(prev => {
             const newTab = makeInitialTab(prev);
+            newTabId = newTab.id;
+            newTabIdRef.current = newTabId;
             
             // Create model first
             const M = monacoRef.current;
@@ -426,9 +448,6 @@ function App() {
                 const model = M.editor.createModel(newTab.content, 'markdown');
                 tabModelsRef.current.set(newTab.id, model);
             }
-            
-            // Switch to new tab
-            setActiveTabId(newTab.id);
             
             return [...prev, newTab];
         });
@@ -516,52 +535,77 @@ function App() {
         }
         
         // Add tab and switch
+        newTabIdRef.current = tabId;
         setTabs(prev => [...prev, newTab]);
-        setActiveTabId(tabId);
     }
 
     async function handleSave() {
-        const activeTab = getActiveTab();
-        if (!activeTab) return;
+        // Use ref to get current activeTabId, then find in current tabs state
+        const currentActiveTabId = activeTabIdRef.current;
+        
+        // Use functional update to get latest tabs
+        let targetTab: TabState | undefined;
+        setTabs(prev => {
+            targetTab = prev.find(t => t.id === currentActiveTabId);
+            return prev; // No change yet
+        });
+        
+        if (!targetTab) {
+            alert('No active tab found');
+            return;
+        }
+        
+        // If no filePath or empty string, use SaveAs instead
+        if (!targetTab.filePath || targetTab.filePath.trim() === '') {
+            await handleSaveAs();
+            return;
+        }
         
         const content = editorRef.current?.getValue() ?? '';
-        const enc = activeTab.fileEncoding === 'UTF-8' ? '' : activeTab.fileEncoding;
+        const enc = targetTab.fileEncoding === 'UTF-8' ? '' : targetTab.fileEncoding;
+        
         const savedPath = enc
-            ? await SaveFileWithEncoding(activeTab.filePath, content, enc)
-            : await SaveFile(activeTab.filePath, content);
+            ? await SaveFileWithEncoding(targetTab.filePath, content, enc)
+            : await SaveFile(targetTab.filePath, content);
         
         if (savedPath) {
-            const updatedTabs = tabs.map(t => {
-                if (t.id === activeTab.id) {
-                    return { ...t, filePath: savedPath, isDirty: false };
+            const displayName = savedPath.split('/').pop() || 'File';
+            setTabs(prev => prev.map(t => {
+                if (t.id === currentActiveTabId) {
+                    return { ...t, filePath: savedPath, isDirty: false, displayName };
                 }
                 return t;
-            });
-            setTabs(updatedTabs);
+            }));
             setFilePath(savedPath);
             setIsDirty(false);
         }
     }
 
     async function handleSaveAs() {
-        const activeTab = getActiveTab();
-        if (!activeTab) return;
+        const currentActiveTabId = activeTabIdRef.current;
+        
+        let targetTab: TabState | undefined;
+        setTabs(prev => {
+            targetTab = prev.find(t => t.id === currentActiveTabId);
+            return prev;
+        });
+        
+        if (!targetTab) return;
         
         const content = editorRef.current?.getValue() ?? '';
-        const enc = activeTab.fileEncoding === 'UTF-8' ? '' : activeTab.fileEncoding;
+        const enc = targetTab.fileEncoding === 'UTF-8' ? '' : targetTab.fileEncoding;
         const savedPath = enc
             ? await SaveFileWithEncoding('', content, enc)
             : await SaveFile('', content);
         
         if (savedPath) {
-            const displayName = getDisplayName(tabs, savedPath);
-            const updatedTabs = tabs.map(t => {
-                if (t.id === activeTab.id) {
+            const displayName = savedPath.split('/').pop() || 'File';
+            setTabs(prev => prev.map(t => {
+                if (t.id === currentActiveTabId) {
                     return { ...t, filePath: savedPath, isDirty: false, displayName };
                 }
                 return t;
-            });
-            setTabs(updatedTabs);
+            }));
             setFilePath(savedPath);
             setIsDirty(false);
         }
@@ -608,8 +652,8 @@ function App() {
             }
             
             // Add tab and switch
+            newTabIdRef.current = tabId;
             setTabs(prev => [...prev, newTab]);
-            setActiveTabId(tabId);
         } catch (err: any) {
             console.error('Failed to open file:', err);
         }
@@ -666,17 +710,52 @@ function App() {
     }
 
     async function doCopy() {
-        // Active non-editor input
+        copyingRef.current = true;  // Signal that we're copying
+        
+        // Active non-editor input - handle custom copy
         const inp = activeInput();
         if (inp) {
             const text = inp.value.substring(inp.selectionStart ?? 0, inp.selectionEnd ?? 0);
-            if (text) await ClipboardSetText(text);
+            if (text) {
+                try {
+                    await navigator.clipboard.writeText(text);
+                } catch {
+                    await ClipboardSetText(text);
+                }
+            }
             return;
         }
+        
+        // For Monaco editor, manually handle copy
+        const editor = editorRef.current;
+        if (editor) {
+            const selection = editor.getSelection();
+            if (selection && !selection.isEmpty()) {
+                const text = editor.getModel()?.getValueInRange(selection) ?? '';
+                if (text) {
+                    try {
+                        await navigator.clipboard.writeText(text);
+                    } catch (err) {
+                        // Fallback to Wails clipboard
+                        try {
+                            await ClipboardSetText(text);
+                        } catch (err2) {
+                            console.error('Copy failed:', err, err2);
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        
         // Selection in any other element (e.g. AI pane)
         const sel = window.getSelection();
         if (sel && sel.toString().length > 0) {
-            await ClipboardSetText(sel.toString());
+            try {
+                await navigator.clipboard.writeText(sel.toString());
+            } catch {
+                await ClipboardSetText(sel.toString());
+            }
         }
     }
 
@@ -687,18 +766,68 @@ function App() {
             const end = inp.selectionEnd ?? 0;
             const selected = inp.value.substring(start, end);
             if (!selected) return;
-            await ClipboardSetText(selected);
+            try {
+                await navigator.clipboard.writeText(selected);
+            } catch {
+                await ClipboardSetText(selected);
+            }
             document.execCommand('delete');
+            return;
+        }
+        
+        // For Monaco editor, manually handle cut
+        const editor = editorRef.current;
+        if (editor) {
+            const selection = editor.getSelection();
+            if (selection && !selection.isEmpty()) {
+                const text = editor.getModel()?.getValueInRange(selection) ?? '';
+                if (text) {
+                    try {
+                        await navigator.clipboard.writeText(text);
+                    } catch {
+                        await ClipboardSetText(text);
+                    }
+                    editor.executeEdits('cut', [{ range: selection, text: '' }]);
+                }
+            }
         }
     }
 
     async function doPaste() {
+        console.log('[doPaste] Called');
         const inp = activeInput();
         if (inp) {
+            console.log('[doPaste] Active input detected');
+            // Use Wails API only to avoid permission dialogs
             const text = await ClipboardGetText();
+            console.log('[doPaste] Input got text from Wails:', text.substring(0, 50));
             if (!text) return;
             inp.focus();
-            document.execCommand('insertText', false, text);
+            // Use value manipulation instead of execCommand to avoid browser prompts
+            const start = inp.selectionStart ?? 0;
+            const end = inp.selectionEnd ?? 0;
+            inp.value = inp.value.substring(0, start) + text + inp.value.substring(end);
+            inp.selectionStart = inp.selectionEnd = start + text.length;
+            // Trigger React's onChange
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
+            console.log('[doPaste] Input paste completed');
+            return;
+        }
+        
+        // For Monaco editor, manually handle paste
+        const editor = editorRef.current;
+        if (editor) {
+            console.log('[doPaste] Monaco editor detected');
+            // Use Wails API only to avoid permission dialogs
+            const text = await ClipboardGetText();
+            console.log('[doPaste] Monaco got text from Wails:', text.substring(0, 50));
+            if (text) {
+                const selection = editor.getSelection();
+                if (selection) {
+                    editor.executeEdits('paste', [{ range: selection, text }]);
+                    console.log('[doPaste] Monaco paste completed');
+                }
+            }
         }
     }
 
@@ -809,26 +938,37 @@ function App() {
     }, []);
 
     // Text selection → AI popup (Monaco API)
+    // Skip popup if user is copying (Cmd+C pressed within 200ms of mouseup)
+    const copyingRef = useRef(false);
     useEffect(() => {
         function onDocMouseUp(e: MouseEvent) {
             if (!isSelectingRef.current) return;
             isSelectingRef.current = false;
-            const editor = editorRef.current;
-            if (!editor) return;
-            const sel = editor.getSelection();
-            if (!sel || sel.isEmpty()) { setPopup(null); setAiHighlight(null); return; }
-            const model = editor.getModel();
-            if (!model) return;
-            const selectedText = model.getValueInRange(sel).trim();
-            if (!selectedText) { setPopup(null); setAiHighlight(null); return; }
-            const start = model.getOffsetAt(sel.getStartPosition());
-            const end = model.getOffsetAt(sel.getEndPosition());
-            setAiHighlight({ start, end });
-            const POPUP_W = 290;
-            const x = Math.min(Math.max(e.clientX, 8), window.innerWidth - POPUP_W - 8);
-            const y = Math.max(Math.min(e.clientY - 48, window.innerHeight - 58), 8);
-            setPopup({ x, y, text: selectedText });
-            setPopupQuestion('');
+            
+            // Wait a bit to see if user is copying
+            setTimeout(() => {
+                if (copyingRef.current) {
+                    copyingRef.current = false;
+                    return;
+                }
+                
+                const editor = editorRef.current;
+                if (!editor) return;
+                const sel = editor.getSelection();
+                if (!sel || sel.isEmpty()) { setPopup(null); setAiHighlight(null); return; }
+                const model = editor.getModel();
+                if (!model) return;
+                const selectedText = model.getValueInRange(sel).trim();
+                if (!selectedText) { setPopup(null); setAiHighlight(null); return; }
+                const start = model.getOffsetAt(sel.getStartPosition());
+                const end = model.getOffsetAt(sel.getEndPosition());
+                setAiHighlight({ start, end });
+                const POPUP_W = 290;
+                const x = Math.min(Math.max(e.clientX, 8), window.innerWidth - POPUP_W - 8);
+                const y = Math.max(Math.min(e.clientY - 48, window.innerHeight - 58), 8);
+                setPopup({ x, y, text: selectedText });
+                setPopupQuestion('');
+            }, 100);
         }
         document.addEventListener('mouseup', onDocMouseUp);
         return () => document.removeEventListener('mouseup', onDocMouseUp);
@@ -1055,23 +1195,36 @@ function App() {
         editor.onDidChangeModelContent(() => {
             setIsDirty(true);
             setAiHighlight(null);
-            setCharCount(editor.getModel()?.getValueLength() ?? 0);
+            const len = editor.getModel()?.getValueLength() ?? 0;
+            setCharCount(len);
             
-            // Update active tab's content
+            // Update active tab's content from editor model
             const tabId = activeTabIdRef.current;
-            const updatedTabs = tabs.map(t => {
+            const model = editor.getModel();
+            const content = model?.getValue() ?? '';
+            
+            setTabs(prev => prev.map(t => {
                 if (t.id === tabId) {
-                    return { ...t, isDirty: true };
+                    return { 
+                        ...t, 
+                        isDirty: true,
+                        content: content,  // Keep tab content in sync with model
+                        charCount: content.length,
+                    };
                 }
                 return t;
-            });
-            setTabs(updatedTabs);
+            }));
             
             schedulePreviewUpdate();
         });
 
         // AI popup: detect selection start
         editor.onMouseDown(() => { isSelectingRef.current = true; });
+
+        // Cmd+C/V/X → Custom clipboard handlers
+        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyC, () => doCopy());
+        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyV, () => doPaste());
+        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyX, () => doCut());
 
         // Cmd+F → custom search panel (suppress Monaco built-in Find)
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyF, () => openFind());
@@ -1393,15 +1546,6 @@ function App() {
 
             {/* Top bar */}
             <div style={{ height: '22px', display: 'flex', alignItems: 'center', padding: '0 10px', background: 'var(--top-bar-bg)', borderBottom: '1px solid var(--top-bar-border)', fontSize: '11px', color: 'var(--top-bar-color)', flexShrink: 0, userSelect: 'none' }}>
-                {displayPath && (
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' }}>
-                        {isDirty && <span style={{ color: '#f59e0b', marginRight: '4px' }}>●</span>}
-                        {displayPath}
-                    </span>
-                )}
-                {isDirty && !displayPath && (
-                    <span style={{ color: '#f59e0b' }}>● 未保存</span>
-                )}
                 <span style={{ marginLeft: 'auto' }}>v{APP_VERSION}</span>
             </div>
 
@@ -1601,7 +1745,22 @@ function App() {
                                     if ((e.metaKey || e.ctrlKey) && e.key === 'c') {
                                         e.preventDefault();
                                         const sel = window.getSelection()?.toString();
-                                        if (sel) await ClipboardSetText(sel);
+                                        console.log('[AI Response] Copy triggered, selected text:', sel?.substring(0, 50));
+                                        if (sel) {
+                                            // Write to BOTH clipboards
+                                            try {
+                                                await navigator.clipboard.writeText(sel);
+                                                console.log('[AI Response] Copied with navigator.clipboard');
+                                            } catch (err) {
+                                                console.log('[AI Response] navigator.clipboard failed:', err);
+                                            }
+                                            try {
+                                                await ClipboardSetText(sel);
+                                                console.log('[AI Response] Copied with Wails API');
+                                            } catch (err) {
+                                                console.log('[AI Response] Wails API failed:', err);
+                                            }
+                                        }
                                     }
                                 }}
                                 style={{ flex: 1, padding: '10px', overflowY: 'auto', textAlign: 'left', outline: 'none', userSelect: 'text', cursor: 'text' }}
@@ -1655,19 +1814,32 @@ function App() {
                                             onChange={e => setAiQuestion(e.target.value)}
                                             onKeyDown={async e => {
                                                 const meta = e.metaKey || e.ctrlKey;
+                                                // Cmd+V: paste
                                                 if (meta && e.key === 'v') {
                                                     e.preventDefault();
-                                                    // capture DOM ref and positions BEFORE await (e.currentTarget becomes null after await)
+                                                    console.log('[AI textarea] Cmd+V triggered');
                                                     const ta = e.currentTarget as HTMLTextAreaElement;
                                                     const start = ta.selectionStart ?? 0;
                                                     const end = ta.selectionEnd ?? 0;
+                                                    
+                                                    // Use Wails API only to avoid permission dialogs
                                                     const text = await ClipboardGetText();
-                                                    if (!text) return;
+                                                    console.log('[AI textarea] Wails clipboard text:', text.substring(0, 50));
+                                                    if (!text) {
+                                                        console.log('[AI textarea] No text to paste');
+                                                        return;
+                                                    }
+                                                    
+                                                    console.log('[AI textarea] Setting question with pasted text');
                                                     setAiQuestion(q => q.substring(0, start) + text + q.substring(end));
-                                                    requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = start + text.length; });
+                                                    requestAnimationFrame(() => {
+                                                        ta.selectionStart = ta.selectionEnd = start + text.length;
+                                                    });
                                                     return;
                                                 }
+                                                // Cmd+A: select all
                                                 if (meta && e.key === 'a') { e.preventDefault(); e.currentTarget.select(); return; }
+                                                // Cmd+Enter: resubmit
                                                 if (meta && e.key === 'Enter' && !aiLoading) {
                                                     e.preventDefault();
                                                     handleResubmitAI(aiProviderId || (settingsProviders.find(p => p.enabled && p.apiKey)?.id ?? ''));

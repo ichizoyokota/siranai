@@ -83,6 +83,24 @@ wails dev
 - フロントエンド（Vite）: http://localhost:5174/
 - Go バックエンド（直接アクセス）: http://localhost:34115
 
+### 開発時の注意点
+
+**デバッグログの確認方法**
+- ❌ ブラウザの開発者コンソールは使えません（Wailsアプリのため）
+- ✅ `wails dev`を実行しているターミナルにログが出力されます
+- `console.log()`の出力はターミナルで確認してください
+
+**Reactのクロージャ問題**
+- イベントハンドラー（`EventsOn`や`useEffect`）内でstateを参照すると、登録時の値がキャプチャされます
+- 最新の値を取得するには：
+  - `useRef`を使う（例: `activeTabIdRef.current`）
+  - 関数型state更新を使う（例: `setTabs(prev => ...)`）
+- 詳細は`frontend/src/App.tsx`の`handleSave`関数を参照
+
+**ビルド後の確認**
+- フロントエンドをビルドした後は`wails dev`を再起動してください
+- 再起動しないと変更が反映されません
+
 ---
 
 ## ビルド・配布

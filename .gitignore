@@ -33,3 +33,14 @@ go.work.sum
 # env file
 .env
 
+# macOS
+.DS_Store
+
+# Build artifacts
+build/bin/
+dist/
+*.app/
+
+# Temporary files
+*.md.tmp
+sparkling-*.md
