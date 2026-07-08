@@ -416,18 +416,22 @@ function App() {
     function doRedo() { editorRef.current?.trigger('keyboard', 'redo', null); }
 
     function handleNew() {
-        const newTab = makeInitialTab(tabs);
-        
-        // Create model first
-        const M = monacoRef.current;
-        if (M) {
-            const model = M.editor.createModel(newTab.content, 'markdown');
-            tabModelsRef.current.set(newTab.id, model);
-        }
-        
-        // Then add tab and switch
-        setTabs(prev => [...prev, newTab]);
-        setActiveTabId(newTab.id);
+        // Use functional update to get the latest tabs
+        setTabs(prev => {
+            const newTab = makeInitialTab(prev);
+            
+            // Create model first
+            const M = monacoRef.current;
+            if (M) {
+                const model = M.editor.createModel(newTab.content, 'markdown');
+                tabModelsRef.current.set(newTab.id, model);
+            }
+            
+            // Switch to new tab
+            setActiveTabId(newTab.id);
+            
+            return [...prev, newTab];
+        });
     }
 
     function applyFileResult(result: { path: string; content: string; encoding: string }) {
@@ -492,26 +496,30 @@ function App() {
             // Active tab is empty — overwrite it
             applyFileResultToTab(activeTab.id, { path: result.path, content: result.content, encoding: result.encoding ?? 'UTF-8' });
         } else {
-            // Open in new tab
-            const newTab = makeInitialTab(tabs);
-            newTab.filePath = result.path;
-            newTab.content = result.content;
-            newTab.fileEncoding = result.encoding ?? 'UTF-8';
-            newTab.displayName = getDisplayName(tabs, result.path);
-            newTab.isDirty = false;
-            newTab.charCount = result.content.length;
-            newTab.sectionCount = result.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length;
+            // Open in new tab - create tab object directly with unique ID
+            const tabId = makeTabId();
+            const newTab: TabState = {
+                id: tabId,
+                filePath: result.path,
+                displayName: result.path.split('/').pop() || 'File',
+                content: result.content,
+                fileEncoding: result.encoding ?? 'UTF-8',
+                isDirty: false,
+                cursorLine: 1,
+                charCount: result.content.length,
+                sectionCount: result.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length,
+            };
             
-            // Create model first
+            // Create model
             const M = monacoRef.current;
             if (M) {
                 const model = M.editor.createModel(result.content, 'markdown');
-                tabModelsRef.current.set(newTab.id, model);
+                tabModelsRef.current.set(tabId, model);
             }
             
-            // Then add tab and switch
+            // Add tab and switch
             setTabs(prev => [...prev, newTab]);
-            setActiveTabId(newTab.id);
+            setActiveTabId(tabId);
         }
     }
 
@@ -585,26 +593,30 @@ function App() {
                 // Active tab is empty — overwrite it
                 applyFileResultToTab(activeTab.id, { path: result.path, content: result.content, encoding: result.encoding ?? 'UTF-8' });
             } else {
-                // Open in new tab
-                const newTab = makeInitialTab(tabs);
-                newTab.filePath = result.path;
-                newTab.content = result.content;
-                newTab.fileEncoding = result.encoding ?? 'UTF-8';
-                newTab.displayName = getDisplayName(tabs, result.path);
-                newTab.isDirty = false;
-                newTab.charCount = result.content.length;
-                newTab.sectionCount = result.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length;
+                // Open in new tab - create tab object directly with unique ID
+                const tabId = makeTabId();
+                const newTab: TabState = {
+                    id: tabId,
+                    filePath: result.path,
+                    displayName: result.path.split('/').pop() || 'File',
+                    content: result.content,
+                    fileEncoding: result.encoding ?? 'UTF-8',
+                    isDirty: false,
+                    cursorLine: 1,
+                    charCount: result.content.length,
+                    sectionCount: result.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length,
+                };
                 
-                // Create model first
+                // Create model
                 const M = monacoRef.current;
                 if (M) {
                     const model = M.editor.createModel(result.content, 'markdown');
-                    tabModelsRef.current.set(newTab.id, model);
+                    tabModelsRef.current.set(tabId, model);
                 }
                 
-                // Then add tab and switch
+                // Add tab and switch
                 setTabs(prev => [...prev, newTab]);
-                setActiveTabId(newTab.id);
+                setActiveTabId(tabId);
             }
         } catch (err: any) {
             console.error('Failed to open file:', err);
