@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
@@ -301,8 +302,33 @@ func (a *App) GetPendingFilePath() string {
 	return path
 }
 
-// OpenFileByPath opens a file at the given path and returns its content
-func (a *App) OpenFileByPath(path string) (map[string]string, error) {
+// readFileChecked reads a file with binary and size checks.
+// If the file is binary, returns {"isBinary":"true"}.
+// If the file exceeds maxFileSize, returns {"isTooLarge":"true"}.
+// Otherwise returns the decoded content.
+func readFileChecked(path string) (map[string]string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check binary by reading only first 8 KB
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	checkBuf := make([]byte, 8192)
+	n, _ := f.Read(checkBuf)
+	f.Close()
+	if isBinaryContent(checkBuf[:n]) {
+		return map[string]string{"isBinary": "true"}, nil
+	}
+
+	// Hard limit: refuse files over maxFileSize
+	if info.Size() > int64(maxFileSize) {
+		return map[string]string{"isTooLarge": "true"}, nil
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -314,6 +340,92 @@ func (a *App) OpenFileByPath(path string) (map[string]string, error) {
 		encoding = "UTF-8"
 	}
 	return map[string]string{"path": path, "content": content, "encoding": encoding}, nil
+}
+
+// OpenFileByPath opens a file at the given path and returns its content
+func (a *App) OpenFileByPath(path string) (map[string]string, error) {
+	return readFileChecked(path)
+}
+
+// ForceOpenFileByPath opens a file ignoring the large-file size limit.
+// Reads in 4 MB chunks and emits "file:loadprogress" events (0-100) to the frontend.
+func (a *App) ForceOpenFileByPath(path string) (map[string]string, error) {
+	// Binary check on first 8 KB
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	checkBuf := make([]byte, 8192)
+	n, _ := f.Read(checkBuf)
+	f.Close()
+	if isBinaryContent(checkBuf[:n]) {
+		return map[string]string{"isBinary": "true"}, nil
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	totalSize := info.Size()
+
+	f, err = os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	const chunkSize = 4 * 1024 * 1024 // 4 MB
+	data := make([]byte, 0, totalSize)
+	chunk := make([]byte, chunkSize)
+	var readBytes int64
+	lastPct := -1
+	for {
+		nr, rerr := f.Read(chunk)
+		if nr > 0 {
+			data = append(data, chunk[:nr]...)
+			readBytes += int64(nr)
+			// チャンク読み込みは 0〜70% に割り当て
+			pct := int(readBytes * 70 / totalSize)
+			if pct != lastPct {
+				lastPct = pct
+				runtime.EventsEmit(a.ctx, "file:loadprogress", pct)
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return nil, rerr
+		}
+	}
+
+	// デコード中: 70〜95%
+	runtime.EventsEmit(a.ctx, "file:loadprogress", 70)
+	encoding := detectEncoding(data)
+	content, err := decodeBytes(data, encoding)
+	if err != nil {
+		content = string(data)
+		encoding = "UTF-8"
+	}
+	runtime.EventsEmit(a.ctx, "file:loadprogress", 95)
+	// 100% は Promise 解決後に JS 側で fileLoadProgress を null にセットして閉じる
+	return map[string]string{"path": path, "content": content, "encoding": encoding}, nil
+}
+
+const maxFileSize = 100 * 1024 * 1024 // 100 MB → hard limit
+
+// isBinaryContent returns true if the data appears to be binary (contains null bytes).
+func isBinaryContent(data []byte) bool {
+	check := data
+	if len(check) > 8192 {
+		check = check[:8192]
+	}
+	for _, b := range check {
+		if b == 0x00 {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- Encoding helpers ----
@@ -462,18 +574,7 @@ func (a *App) OpenFile() (map[string]string, error) {
 	if err != nil || path == "" {
 		return nil, err
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	encoding := detectEncoding(data)
-	content, err := decodeBytes(data, encoding)
-	if err != nil {
-		// フォールバック: 生バイトをそのまま文字列として扱う
-		content = string(data)
-		encoding = "UTF-8"
-	}
-	return map[string]string{"path": path, "content": content, "encoding": encoding}, nil
+	return readFileChecked(path)
 }
 
 // SaveFile saves content to the given path, or opens a save dialog if path is empty
@@ -499,4 +600,39 @@ func (a *App) SaveFile(path string, content string) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+// Step 10: OpenNewWindow opens the app with the given file
+func (a *App) OpenNewWindow(filePath string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	
+	// Use 'open' command on macOS with -n flag to create a new window
+	var cmd *exec.Cmd
+	if filePath != "" {
+		cmd = exec.Command("open", "-n", exe, "--args", filePath)
+	} else {
+		cmd = exec.Command("open", "-n", exe)
+	}
+	
+	return cmd.Run()
+}
+
+// Step 10: ConfirmCloseTab shows a confirmation dialog for unsaved changes
+func (a *App) ConfirmCloseTab(displayName string, isDirty bool) (bool, error) {
+	if !isDirty {
+		return true, nil
+	}
+	
+	result, err := runtime.MessageDialog(a.ctx, runtime.MessageDialogOptions{
+		Type:          runtime.QuestionDialog,
+		Title:         "Unsaved Changes",
+		Message:       fmt.Sprintf(`"%s" has unsaved changes. Close anyway?`, displayName),
+		Buttons:       []string{"Cancel", "Close"},
+		DefaultButton: "Cancel",
+	})
+	
+	return result == "Close", err
 }

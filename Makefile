@@ -19,22 +19,9 @@ build:
 bundle-libs: build
 	@echo "==> Adding ja.lproj for Japanese localization..."
 	@mkdir -p $(APP_PATH)/Contents/Resources/ja.lproj
-	@echo "==> Bundling libmecab into app..."
-	@mkdir -p $(APP_PATH)/Contents/Frameworks
-	@cp /opt/homebrew/opt/mecab/lib/libmecab.2.dylib $(APP_PATH)/Contents/Frameworks/
-	@chmod 755 $(APP_PATH)/Contents/Frameworks/libmecab.2.dylib
-	@install_name_tool -change \
-		/opt/homebrew/opt/mecab/lib/libmecab.2.dylib \
-		@executable_path/../Frameworks/libmecab.2.dylib \
-		$(APP_PATH)/Contents/MacOS/SIRANAI
-	@echo "==> libmecab bundled."
+	@echo "==> bundle-libs done."
 
 sign: bundle-libs
-	@echo "==> Signing bundled libraries..."
-	@codesign --force --options runtime \
-		--sign "$(SIGN_IDENTITY)" \
-		--timestamp \
-		$(APP_PATH)/Contents/Frameworks/libmecab.2.dylib
 	@echo "==> Signing app..."
 	@codesign --deep --force --options runtime \
 		--sign "$(SIGN_IDENTITY)" \

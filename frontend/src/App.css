@@ -130,3 +130,33 @@
     background: var(--line-num-bg, #f9fafb);
     opacity: 0.6;
 }
+
+/* AI highlight decoration in Monaco Editor */
+.ai-highlight-decoration {
+    border-bottom: 2px solid #f97316;
+}
+
+/* Step 8: Tab bar styles */
+.tab-item {
+    transition: all 0.2s ease;
+    user-select: none;
+}
+
+.tab-item:hover {
+    opacity: 0.8;
+}
+
+.tab-active {
+    background: var(--editor-bg);
+    border-bottom: 2px solid #2563eb;
+    font-weight: bold;
+}
+
+.tab-close {
+    transition: all 0.2s ease;
+}
+
+.tab-close:hover {
+    opacity: 1;
+    font-weight: bold;
+}

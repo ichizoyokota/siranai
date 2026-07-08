@@ -20,6 +20,12 @@
         "name": "Markdown Document",
         "iconName": "appicon",
         "role": "Editor"
+      },
+      {
+        "ext": "txt",
+        "name": "Plain Text Document",
+        "iconName": "appicon",
+        "role": "Editor"
       }
     ]
   }

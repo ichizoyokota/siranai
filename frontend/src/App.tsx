@@ -1,8 +1,10 @@
-import {useEffect, useLayoutEffect, useRef, useState} from 'react';
+import {useEffect, useMemo, useRef, useState} from 'react';
+import Editor, { OnMount } from '@monaco-editor/react';
+import type * as Monaco from 'monaco-editor/esm/vs/editor/editor.api';
 import appIcon from './assets/images/appicon.png';
 import {marked} from 'marked';
 marked.setOptions({ gfm: true, breaks: false });
-import {GetDisplayName, GetPendingFilePath, LoadSettings, OpenFile, OpenFileByPath, PrintHTML, PrintText, QueryAI, ReopenWithEncoding, SaveFile, SaveFileWithEncoding, SaveSettings, SetDirty} from '../wailsjs/go/main/App';
+import {ConfirmCloseTab, GetDisplayName, GetPendingFilePath, LoadSettings, OpenFile, OpenFileByPath, OpenNewWindow, PrintHTML, PrintText, QueryAI, ReopenWithEncoding, SaveFile, SaveFileWithEncoding, SaveSettings, SetDirty} from '../wailsjs/go/main/App';
 import {ClipboardGetText, ClipboardSetText, EventsOn, WindowSetTitle} from '../wailsjs/runtime/runtime';
 import './App.css';
 
@@ -84,7 +86,8 @@ const DEFAULT_PROVIDERS: AIProviderConfig[] = [
 ];
 
 const INITIAL_CONTENT = "# Hello SIRANAI\n\nStart typing your markdown here...";
-const MAX_UNDO = 100;
+// Preview rendering limit: avoid marked() freezing on large files
+const PREVIEW_CHAR_LIMIT = 100_000;
 
 // Apply theme vars immediately (before first render) to avoid flash
 {
@@ -93,7 +96,49 @@ const MAX_UNDO = 100;
     Object.entries(vars).forEach(([k, v]) => document.documentElement.style.setProperty(k, v));
 }
 
+// Step 1: Tab State Interface & Helper Functions
+interface TabState {
+    id: string;
+    filePath: string;
+    displayName: string;
+    content: string;
+    fileEncoding: string;
+    isDirty: boolean;
+    cursorLine: number;
+    charCount: number;
+    sectionCount: number;
+}
+
+function makeTabId(): string {
+    return `tab-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+}
+
+function makeInitialTab(): TabState {
+    return {
+        id: makeTabId(),
+        filePath: '',
+        displayName: '',
+        content: INITIAL_CONTENT,
+        fileEncoding: 'UTF-8',
+        isDirty: false,
+        cursorLine: 1,
+        charCount: INITIAL_CONTENT.length,
+        sectionCount: 1,
+    };
+}
+
+function toMonacoTheme(colorTheme: ColorTheme): string {
+    if (colorTheme === 'dark') return 'vs-dark';
+    if (colorTheme === 'gruvbox') return 'gruvbox-dark';
+    return 'vs';
+}
+
 function App() {
+    // Step 1: Tab state
+    const [tabs, setTabs] = useState<TabState[]>([makeInitialTab()]);
+    const [activeTabId, setActiveTabId] = useState<string>(tabs[0].id);
+    
+    // For maintaining backward compatibility with existing code
     const [markdown, setMarkdown] = useState(INITIAL_CONTENT);
     const [filePath, setFilePath] = useState("");
     const [displayPath, setDisplayPath] = useState<string | null>(null);
@@ -127,6 +172,10 @@ function App() {
     // About modal
     const [showAbout, setShowAbout] = useState(false);
 
+    // File warning dialog (binary / too large file)
+    type FileWarningState = { type: 'binary' } | { type: 'tooLarge' };
+    const [fileWarning, setFileWarning] = useState<FileWarningState | null>(null);
+
     // Settings modal
     const [showSettings, setShowSettings] = useState(false);
     const [settingsProviders, setSettingsProviders] = useState<AIProviderConfig[]>(DEFAULT_PROVIDERS);
@@ -137,6 +186,8 @@ function App() {
 
     // Status bar
     const [cursorLine, setCursorLine] = useState(1);
+    const [charCount, setCharCount] = useState(INITIAL_CONTENT.length);
+    const [sectionCount, setSectionCount] = useState(1);
     const [isDragOver, setIsDragOver] = useState(false);
     const [shiftDuringDrag, setShiftDuringDrag] = useState(false);
     const [isDirty, setIsDirty] = useState(false);
@@ -156,32 +207,63 @@ function App() {
 
     const filePathRef = useRef(filePath);
     const shiftPressedRef = useRef(false);
-    const markdownRef = useRef(markdown);
-    // IME composition tracking
-    const isComposingRef = useRef(false);
-    const justFinishedCompositionRef = useRef(false);
-    // Desired cursor position after content change (applied by useLayoutEffect)
-    const nextCursorRef = useRef<number | null>(null);
-    const textareaRef = useRef<HTMLTextAreaElement>(null);
     const searchInputRef = useRef<HTMLInputElement>(null);
     const popupQuestionRef = useRef<HTMLInputElement>(null);
     const popupRef = useRef<HTMLDivElement>(null);
     const isSelectingRef = useRef(false);
-    const overlayRef = useRef<HTMLDivElement>(null);
-
-    const undoStack = useRef<string[]>([INITIAL_CONTENT]);
-    const redoStack = useRef<string[]>([]);
-    const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const lineNumbersRef = useRef<HTMLDivElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const isDraggingRef2 = useRef(false);
     const aiResponseAreaRef = useRef<HTMLDivElement>(null);
     const dragStartXRef = useRef(0);
     const dragStartWidthRef = useRef(0);
 
+    // Monaco refs
+    const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
+    const monacoRef = useRef<typeof Monaco | null>(null);
+    const decorationIdsRef = useRef<string[]>([]);
+    const previewRef = useRef<HTMLDivElement>(null);
+    const previewUpdateTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    // Step 1: Tab refs
+    const tabModelsRef = useRef<Map<string, Monaco.editor.ITextModel>>(new Map());
+    const activeTabIdRef = useRef<string>(activeTabId);
+    const tabDragDataRef = useRef<{ tabId: string } | null>(null);
+
     useEffect(() => { filePathRef.current = filePath; }, [filePath]);
-    useEffect(() => { markdownRef.current = markdown; }, [markdown]);
     useEffect(() => { void SetDirty(isDirty); }, [isDirty]);
+    useEffect(() => { activeTabIdRef.current = activeTabId; }, [activeTabId]);
+    
+    // Step 2-3: When active tab changes, switch Monaco model and update state
+    useEffect(() => {
+        const editor = editorRef.current;
+        const M = monacoRef.current;
+        const activeTab = tabs.find(t => t.id === activeTabId);
+        
+        if (!activeTab || !editor || !M) return;
+        
+        // Ensure model exists
+        if (!tabModelsRef.current.has(activeTab.id)) {
+            const model = M.editor.createModel(activeTab.content, 'markdown');
+            tabModelsRef.current.set(activeTab.id, model);
+        }
+        
+        // Switch to this tab's model
+        const model = tabModelsRef.current.get(activeTab.id);
+        if (model) {
+            editor.setModel(model);
+        }
+        
+        // Update state variables for display
+        setFilePath(activeTab.filePath);
+        setFileEncoding(activeTab.fileEncoding);
+        setMarkdown(activeTab.content.length > PREVIEW_CHAR_LIMIT
+            ? activeTab.content.substring(0, PREVIEW_CHAR_LIMIT)
+            : activeTab.content);
+        setCharCount(activeTab.charCount);
+        setSectionCount(activeTab.sectionCount);
+        setCursorLine(activeTab.cursorLine);
+        setIsDirty(activeTab.isDirty);
+    }, [activeTabId, tabs]);
     // Apply color theme CSS variables to document root
     useEffect(() => {
         localStorage.setItem('siranai-theme', colorTheme);
@@ -190,20 +272,36 @@ function App() {
     }, [colorTheme]);
     useEffect(() => { localStorage.setItem('siranai-fontsize', String(fontSize)); }, [fontSize]);
     useEffect(() => { localStorage.setItem('siranai-fontfamily', fontFamily); }, [fontFamily]);
-    // Restore cursor position after React re-render (must fire after DOM commit)
-    useLayoutEffect(() => {
-        if (nextCursorRef.current !== null && textareaRef.current) {
-            const pos = nextCursorRef.current;
-            nextCursorRef.current = null;
-            textareaRef.current.selectionStart = pos;
-            textareaRef.current.selectionEnd = pos;
-        }
-    }, [markdown]);
+
     // Auto-scroll AI response area to bottom when response updates
     useEffect(() => {
         const el = aiResponseAreaRef.current;
         if (el) el.scrollTop = el.scrollHeight;
     }, [aiResponse, aiHistory.length]);
+
+    // Sync colorTheme changes to Monaco
+    useEffect(() => {
+        monacoRef.current?.editor.setTheme(toMonacoTheme(colorTheme));
+    }, [colorTheme]);
+
+    // AI highlight decorations
+    useEffect(() => {
+        const editor = editorRef.current;
+        const M = monacoRef.current;
+        if (!editor || !M) return;
+        const model = editor.getModel();
+        if (!model) return;
+        if (!aiHighlight) {
+            decorationIdsRef.current = editor.deltaDecorations(decorationIdsRef.current, []);
+            return;
+        }
+        const startPos = model.getPositionAt(aiHighlight.start);
+        const endPos = model.getPositionAt(aiHighlight.end);
+        decorationIdsRef.current = editor.deltaDecorations(decorationIdsRef.current, [{
+            range: new M.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column),
+            options: { inlineClassName: 'ai-highlight-decoration' },
+        }]);
+    }, [aiHighlight]);
 
     // Load settings on mount
     useEffect(() => {
@@ -218,7 +316,7 @@ function App() {
         });
     }, []);
 
-    const previewHtml = marked(markdown) as string;
+    const previewHtml = useMemo(() => marked(markdown) as string, [markdown]); // markdown is already limited to PREVIEW_CHAR_LIMIT
     useEffect(() => {
         if (!filePath) {
             setDisplayPath(null);
@@ -231,92 +329,277 @@ function App() {
         });
     }, [filePath]);
 
-    function handleContentChange(value: string) {
-        setMarkdown(value);
-        setAiHighlight(null);
-        setIsDirty(true);
-        if (undoTimer.current) clearTimeout(undoTimer.current);
-        undoTimer.current = setTimeout(() => {
-            const top = undoStack.current[undoStack.current.length - 1];
-            if (top !== value) {
-                undoStack.current.push(value);
-                if (undoStack.current.length > MAX_UNDO) undoStack.current.shift();
-                redoStack.current = [];
+    // Called by Monaco onDidChangeModelContent — debounces expensive preview/section updates
+    function getActiveTab(): TabState | undefined {
+        return tabs.find(t => t.id === activeTabId);
+    }
+
+    function switchToTab(tabId: string) {
+        const tab = tabs.find(t => t.id === tabId);
+        if (!tab) return;
+        setActiveTabId(tabId);
+        
+        // Switch Monaco model
+        const editor = editorRef.current;
+        const M = monacoRef.current;
+        if (!editor || !M) return;
+        
+        const model = tabModelsRef.current.get(tabId);
+        if (model) {
+            editor.setModel(model);
+            editor.focus();
+        }
+    }
+
+    function closeTab(tabId: string) {
+        if (tabs.length === 1) {
+            // Last tab — create new tab instead
+            handleNew();
+            return;
+        }
+        
+        const tabToClose = tabs.find(t => t.id === tabId);
+        if (!tabToClose) return;
+        
+        if (tabToClose.isDirty) {
+            const confirmed = window.confirm(`"${tabToClose.displayName || 'Untitled'}" has unsaved changes. Close anyway?`);
+            if (!confirmed) return;
+        }
+        
+        // Remove from tabs list
+        setTabs(tabs.filter(t => t.id !== tabId));
+        
+        // Destroy model
+        const model = tabModelsRef.current.get(tabId);
+        if (model) {
+            model.dispose();
+            tabModelsRef.current.delete(tabId);
+        }
+        
+        // Switch to another tab if the closed tab was active
+        if (activeTabId === tabId) {
+            const nextTab = tabs.find(t => t.id !== tabId);
+            if (nextTab) {
+                switchToTab(nextTab.id);
             }
-        }, 500);
+        }
     }
 
-    function doUndo() {
-        if (undoTimer.current) { clearTimeout(undoTimer.current); undoTimer.current = null; }
-        if (undoStack.current.length <= 1) return;
-        const current = undoStack.current.pop()!;
-        redoStack.current.push(current);
-        setMarkdown(undoStack.current[undoStack.current.length - 1]);
+    function schedulePreviewUpdate() {
+        if (previewUpdateTimer.current) clearTimeout(previewUpdateTimer.current);
+        previewUpdateTimer.current = setTimeout(() => {
+            const editor = editorRef.current;
+            if (!editor) return;
+            const val = editor.getValue();
+            setMarkdown(val.length > PREVIEW_CHAR_LIMIT ? val.substring(0, PREVIEW_CHAR_LIMIT) : val);
+            const lines = editor.getModel()?.getLinesContent() ?? [];
+            setSectionCount(lines.filter(l => /^#{1,6}\s/.test(l)).length);
+        }, 300);
     }
 
-    function doRedo() {
-        if (redoStack.current.length === 0) return;
-        const next = redoStack.current.pop()!;
-        undoStack.current.push(next);
-        setMarkdown(next);
-    }
+    function doUndo() { editorRef.current?.trigger('keyboard', 'undo', null); }
+    function doRedo() { editorRef.current?.trigger('keyboard', 'redo', null); }
 
     function handleNew() {
-        undoStack.current = [''];
-        redoStack.current = [];
-        setMarkdown('');
-        setFilePath('');
+        const newTab = makeInitialTab();
+        setTabs([...tabs, newTab]);
+        
+        // Create model for new tab
+        const M = monacoRef.current;
+        if (M) {
+            const model = M.editor.createModel(newTab.content, 'markdown');
+            tabModelsRef.current.set(newTab.id, model);
+        }
+        
+        // Switch to new tab
+        setActiveTabId(newTab.id);
+        
+        // Switch editor to new model
+        const editor = editorRef.current;
+        if (editor && M) {
+            const model = tabModelsRef.current.get(newTab.id);
+            if (model) {
+                editor.setModel(model);
+                editor.focus();
+            }
+        }
+    }
+
+    function applyFileResult(result: { path: string; content: string; encoding: string }) {
+        editorRef.current?.setValue(result.content);
+        // Limit preview content to prevent marked() freeze on large files
+        setMarkdown(result.content.length > PREVIEW_CHAR_LIMIT
+            ? result.content.substring(0, PREVIEW_CHAR_LIMIT)
+            : result.content);
+        setCharCount(result.content.length);
+        setSectionCount(result.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length);
+        setFilePath(result.path);
+        setFileEncoding(result.encoding ?? 'UTF-8');
         setIsDirty(false);
     }
 
-    async function handleOpen() {
-        const result = await OpenFile();
-        if (result) {
-            undoStack.current = [result.content];
-            redoStack.current = [];
-            setMarkdown(result.content);
+    function applyFileResultToTab(tabId: string, result: { path: string; content: string; encoding: string }) {
+        const updatedTabs = tabs.map(t => {
+            if (t.id === tabId) {
+                return {
+                    ...t,
+                    filePath: result.path,
+                    content: result.content,
+                    fileEncoding: result.encoding ?? 'UTF-8',
+                    isDirty: false,
+                    displayName: result.path.split('/').pop() || 'Untitled',
+                    charCount: result.content.length,
+                    sectionCount: result.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length,
+                };
+            }
+            return t;
+        });
+        setTabs(updatedTabs);
+        
+        // Update Monaco model
+        const model = tabModelsRef.current.get(tabId);
+        if (model) {
+            model.setValue(result.content);
+        }
+        
+        // Update current view if this is the active tab
+        if (tabId === activeTabId) {
+            setMarkdown(result.content.length > PREVIEW_CHAR_LIMIT
+                ? result.content.substring(0, PREVIEW_CHAR_LIMIT)
+                : result.content);
+            setCharCount(result.content.length);
+            setSectionCount(result.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length);
             setFilePath(result.path);
             setFileEncoding(result.encoding ?? 'UTF-8');
             setIsDirty(false);
         }
     }
 
+    async function handleOpen() {
+        const result = await OpenFile();
+        if (!result) return;
+        if (result.isBinary === 'true') { setFileWarning({ type: 'binary' }); return; }
+        if (result.isTooLarge === 'true') { setFileWarning({ type: 'tooLarge' }); return; }
+        
+        const activeTab = getActiveTab();
+        if (activeTab && !activeTab.filePath && !activeTab.isDirty && activeTab.content === INITIAL_CONTENT) {
+            // Active tab is empty — overwrite it
+            applyFileResultToTab(activeTab.id, { path: result.path, content: result.content, encoding: result.encoding ?? 'UTF-8' });
+        } else {
+            // Open in new tab
+            const newTab = makeInitialTab();
+            newTab.filePath = result.path;
+            newTab.content = result.content;
+            newTab.fileEncoding = result.encoding ?? 'UTF-8';
+            newTab.displayName = result.path.split('/').pop() || 'Untitled';
+            newTab.isDirty = false;
+            newTab.charCount = result.content.length;
+            newTab.sectionCount = result.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length;
+            
+            setTabs([...tabs, newTab]);
+            
+            // Create model
+            const M = monacoRef.current;
+            if (M) {
+                const model = M.editor.createModel(result.content, 'markdown');
+                tabModelsRef.current.set(newTab.id, model);
+            }
+            
+            // Switch to new tab
+            switchToTab(newTab.id);
+        }
+    }
+
     async function handleSave() {
-        const enc = fileEncoding === 'UTF-8' ? '' : fileEncoding;
+        const activeTab = getActiveTab();
+        if (!activeTab) return;
+        
+        const content = editorRef.current?.getValue() ?? '';
+        const enc = activeTab.fileEncoding === 'UTF-8' ? '' : activeTab.fileEncoding;
         const savedPath = enc
-            ? await SaveFileWithEncoding(filePathRef.current, markdownRef.current, enc)
-            : await SaveFile(filePathRef.current, markdownRef.current);
-        if (savedPath) { setFilePath(savedPath); setIsDirty(false); }
+            ? await SaveFileWithEncoding(activeTab.filePath, content, enc)
+            : await SaveFile(activeTab.filePath, content);
+        
+        if (savedPath) {
+            const updatedTabs = tabs.map(t => {
+                if (t.id === activeTab.id) {
+                    return { ...t, filePath: savedPath, isDirty: false };
+                }
+                return t;
+            });
+            setTabs(updatedTabs);
+            setFilePath(savedPath);
+            setIsDirty(false);
+        }
     }
 
     async function handleSaveAs() {
-        const enc = fileEncoding === 'UTF-8' ? '' : fileEncoding;
+        const activeTab = getActiveTab();
+        if (!activeTab) return;
+        
+        const content = editorRef.current?.getValue() ?? '';
+        const enc = activeTab.fileEncoding === 'UTF-8' ? '' : activeTab.fileEncoding;
         const savedPath = enc
-            ? await SaveFileWithEncoding('', markdownRef.current, enc)
-            : await SaveFile('', markdownRef.current);
-        if (savedPath) { setFilePath(savedPath); setIsDirty(false); }
+            ? await SaveFileWithEncoding('', content, enc)
+            : await SaveFile('', content);
+        
+        if (savedPath) {
+            const updatedTabs = tabs.map(t => {
+                if (t.id === activeTab.id) {
+                    return { ...t, filePath: savedPath, isDirty: false, displayName: savedPath.split('/').pop() || 'Untitled' };
+                }
+                return t;
+            });
+            setTabs(updatedTabs);
+            setFilePath(savedPath);
+            setIsDirty(false);
+        }
     }
 
     function insertPathAtCursor(path: string) {
-        const ta = textareaRef.current;
-        const val = markdownRef.current;
-        const start = ta ? ta.selectionStart : val.length;
-        const end = ta ? ta.selectionEnd : val.length;
-        const next = val.substring(0, start) + path + val.substring(end);
-        nextCursorRef.current = start + path.length;
-        handleContentChange(next);
+        const editor = editorRef.current;
+        const M = monacoRef.current;
+        if (editor && M) {
+            const sel = editor.getSelection();
+            const pos = sel?.getStartPosition() ?? { lineNumber: 1, column: 1 };
+            const range = sel ?? new M.Range(pos.lineNumber, pos.column, pos.lineNumber, pos.column);
+            editor.executeEdits('insertPath', [{ range, text: path }]);
+        }
     }
 
     async function handleOpenPath(path: string) {
         try {
             const result = await OpenFileByPath(path);
-            if (result) {
-                undoStack.current = [result.content];
-                redoStack.current = [];
-                setMarkdown(result.content);
-                setFilePath(result.path);
-                setFileEncoding(result.encoding ?? 'UTF-8');
-                setIsDirty(false);
+            if (!result) return;
+            if (result.isBinary === 'true') { setFileWarning({ type: 'binary' }); return; }
+            if (result.isTooLarge === 'true') { setFileWarning({ type: 'tooLarge' }); return; }
+            
+            const activeTab = getActiveTab();
+            if (activeTab && !activeTab.filePath && !activeTab.isDirty && activeTab.content === INITIAL_CONTENT) {
+                // Active tab is empty — overwrite it
+                applyFileResultToTab(activeTab.id, { path: result.path, content: result.content, encoding: result.encoding ?? 'UTF-8' });
+            } else {
+                // Open in new tab
+                const newTab = makeInitialTab();
+                newTab.filePath = result.path;
+                newTab.content = result.content;
+                newTab.fileEncoding = result.encoding ?? 'UTF-8';
+                newTab.displayName = result.path.split('/').pop() || 'Untitled';
+                newTab.isDirty = false;
+                newTab.charCount = result.content.length;
+                newTab.sectionCount = result.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length;
+                
+                setTabs([...tabs, newTab]);
+                
+                // Create model
+                const M = monacoRef.current;
+                if (M) {
+                    const model = M.editor.createModel(result.content, 'markdown');
+                    tabModelsRef.current.set(newTab.id, model);
+                }
+                
+                // Switch to new tab
+                switchToTab(newTab.id);
             }
         } catch (err: any) {
             console.error('Failed to open file:', err);
@@ -325,17 +608,38 @@ function App() {
 
     async function handleReopenWithEncoding(encoding: string) {
         setShowEncodingMenu(false);
-        if (!filePath) {
-            // ファイル未保存の場合はエンコーディングのみ変更
+        const activeTab = getActiveTab();
+        
+        if (!activeTab || !activeTab.filePath) {
+            // Unsaved file — only change encoding
             setFileEncoding(encoding);
             return;
         }
+        
         try {
-            const result = await ReopenWithEncoding(filePath, encoding);
+            const result = await ReopenWithEncoding(activeTab.filePath, encoding);
             if (result) {
-                undoStack.current = [result.content];
-                redoStack.current = [];
-                setMarkdown(result.content);
+                editorRef.current?.setValue(result.content);
+                
+                const updatedTabs = tabs.map(t => {
+                    if (t.id === activeTab.id) {
+                        return {
+                            ...t,
+                            content: result.content,
+                            fileEncoding: result.encoding ?? encoding,
+                            charCount: result.content.length,
+                            sectionCount: result.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length,
+                        };
+                    }
+                    return t;
+                });
+                setTabs(updatedTabs);
+                
+                setMarkdown(result.content.length > PREVIEW_CHAR_LIMIT
+                    ? result.content.substring(0, PREVIEW_CHAR_LIMIT)
+                    : result.content);
+                setCharCount(result.content.length);
+                setSectionCount(result.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length);
                 setFileEncoding(result.encoding ?? encoding);
             }
         } catch (err: any) {
@@ -343,10 +647,10 @@ function App() {
         }
     }
 
-    // Returns the focused input/textarea that is NOT the main editor, or null
+    // Returns the focused input/textarea that is NOT the Monaco editor, or null
     function activeInput(): HTMLInputElement | HTMLTextAreaElement | null {
         const el = document.activeElement;
-        if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el !== textareaRef.current) {
+        if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && !el.closest('.monaco-editor')) {
             return el as HTMLInputElement | HTMLTextAreaElement;
         }
         return null;
@@ -364,13 +668,7 @@ function App() {
         const sel = window.getSelection();
         if (sel && sel.toString().length > 0) {
             await ClipboardSetText(sel.toString());
-            return;
         }
-        // Main textarea
-        const ta = textareaRef.current;
-        if (!ta) return;
-        const text = ta.value.substring(ta.selectionStart, ta.selectionEnd);
-        if (text) await ClipboardSetText(text);
     }
 
     async function doCut() {
@@ -381,45 +679,24 @@ function App() {
             const selected = inp.value.substring(start, end);
             if (!selected) return;
             await ClipboardSetText(selected);
-            // insertText is the reliable way to mutate React-controlled inputs
             document.execCommand('delete');
-            return;
         }
-        const ta = textareaRef.current;
-        if (!ta) return;
-        const start = ta.selectionStart;
-        const end = ta.selectionEnd;
-        const selected = ta.value.substring(start, end);
-        if (!selected) return;
-        await ClipboardSetText(selected);
-        const next = markdownRef.current.substring(0, start) + markdownRef.current.substring(end);
-        nextCursorRef.current = start;
-        handleContentChange(next);
     }
 
     async function doPaste() {
-        const text = await ClipboardGetText();
-        if (!text) return;
         const inp = activeInput();
         if (inp) {
-            // execCommand works with React-controlled inputs in WebKit
+            const text = await ClipboardGetText();
+            if (!text) return;
             inp.focus();
             document.execCommand('insertText', false, text);
-            return;
         }
-        const ta = textareaRef.current;
-        if (!ta) return;
-        const start = ta.selectionStart;
-        const end = ta.selectionEnd;
-        const next = markdownRef.current.substring(0, start) + text + markdownRef.current.substring(end);
-        nextCursorRef.current = start + text.length;
-        handleContentChange(next);
     }
 
     function doSelectAll() {
         const inp = activeInput();
         if (inp) { inp.select(); return; }
-        textareaRef.current?.select();
+        editorRef.current?.trigger('keyboard', 'editor.action.selectAll', null);
     }
 
     // Right-pane resize drag
@@ -454,22 +731,6 @@ function App() {
         (document.body.style as any).userSelect = 'none';
     }
 
-    function handleTextareaScroll() {
-        if (overlayRef.current && textareaRef.current) {
-            overlayRef.current.scrollTop = textareaRef.current.scrollTop;
-        }
-        if (lineNumbersRef.current && textareaRef.current) {
-            lineNumbersRef.current.scrollTop = textareaRef.current.scrollTop;
-        }
-    }
-
-    function updateCursorLine() {
-        if (textareaRef.current) {
-            const pos = textareaRef.current.selectionStart;
-            setCursorLine(markdown.substring(0, pos).split('\n').length);
-        }
-    }
-
     // Search / Replace
     function openFind() {
         setShowSearch(true); setShowReplace(false);
@@ -479,38 +740,46 @@ function App() {
         setShowSearch(true); setShowReplace(true);
         requestAnimationFrame(() => searchInputRef.current?.focus());
     }
-    function closeSearch() { setShowSearch(false); textareaRef.current?.focus(); }
+    function closeSearch() { setShowSearch(false); editorRef.current?.focus(); }
 
     function findNext() {
-        const ta = textareaRef.current;
-        if (!ta || !searchText) return;
-        const content = ta.value;
-        const from = ta.selectionEnd ?? 0;
-        let idx = content.indexOf(searchText, from);
-        if (idx === -1) idx = content.indexOf(searchText, 0);
-        if (idx === -1) return;
-        ta.focus();
-        ta.selectionStart = idx;
-        ta.selectionEnd = idx + searchText.length;
+        const editor = editorRef.current;
+        if (!editor || !searchText) return;
+        const model = editor.getModel();
+        if (!model) return;
+        const pos = editor.getPosition() ?? { lineNumber: 1, column: 1 };
+        const matches = model.findMatches(searchText, false, false, false, null, false);
+        if (!matches.length) return;
+        const next = matches.find(m =>
+            m.range.startLineNumber > pos.lineNumber ||
+            (m.range.startLineNumber === pos.lineNumber && m.range.startColumn > pos.column)
+        ) ?? matches[0];
+        editor.setSelection(next.range);
+        editor.revealRangeInCenter(next.range);
     }
 
     function doReplace() {
-        const ta = textareaRef.current;
-        if (!ta || !searchText) return;
-        const start = ta.selectionStart;
-        const end = ta.selectionEnd;
-        if (ta.value.substring(start, end) === searchText) {
-            const next = markdownRef.current.substring(0, start) + replaceText + markdownRef.current.substring(end);
-            handleContentChange(next);
-            requestAnimationFrame(() => { ta.selectionStart = start; ta.selectionEnd = start + replaceText.length; findNext(); });
+        const editor = editorRef.current;
+        if (!editor || !searchText) return;
+        const sel = editor.getSelection();
+        const model = editor.getModel();
+        if (sel && model?.getValueInRange(sel) === searchText) {
+            editor.executeEdits('replace', [{ range: sel, text: replaceText }]);
+            findNext();
         } else {
             findNext();
         }
     }
 
     function doReplaceAll() {
-        if (!searchText) return;
-        handleContentChange(markdownRef.current.split(searchText).join(replaceText));
+        const editor = editorRef.current;
+        const model = editor?.getModel();
+        if (!editor || !model || !searchText) return;
+        const edits = model.findMatches(searchText, false, false, false, null, false)
+            .map(m => ({ range: m.range, text: replaceText }));
+        if (edits.length) {
+            editor.executeEdits('replaceAll', edits);
+        }
     }
 
     // Close popup / encoding menu on click outside
@@ -530,22 +799,26 @@ function App() {
         return () => document.removeEventListener('mousedown', onMouseDown);
     }, []);
 
-    // Text selection → popup (document-level to handle releases outside textarea)
+    // Text selection → AI popup (Monaco API)
     useEffect(() => {
         function onDocMouseUp(e: MouseEvent) {
             if (!isSelectingRef.current) return;
             isSelectingRef.current = false;
-            const ta = textareaRef.current;
-            if (!ta) return;
-            const selStart = ta.selectionStart;
-            const selEnd = ta.selectionEnd;
-            const selected = ta.value.substring(selStart, selEnd).trim();
-            if (!selected) { setPopup(null); setAiHighlight(null); return; }
-            const POPUP_W = 290, POPUP_H = 50;
+            const editor = editorRef.current;
+            if (!editor) return;
+            const sel = editor.getSelection();
+            if (!sel || sel.isEmpty()) { setPopup(null); setAiHighlight(null); return; }
+            const model = editor.getModel();
+            if (!model) return;
+            const selectedText = model.getValueInRange(sel).trim();
+            if (!selectedText) { setPopup(null); setAiHighlight(null); return; }
+            const start = model.getOffsetAt(sel.getStartPosition());
+            const end = model.getOffsetAt(sel.getEndPosition());
+            setAiHighlight({ start, end });
+            const POPUP_W = 290;
             const x = Math.min(Math.max(e.clientX, 8), window.innerWidth - POPUP_W - 8);
-            const y = Math.max(Math.min(e.clientY - 48, window.innerHeight - POPUP_H - 8), 8);
-            setAiHighlight({ start: selStart, end: selEnd });
-            setPopup({ x, y, text: selected });
+            const y = Math.max(Math.min(e.clientY - 48, window.innerHeight - 58), 8);
+            setPopup({ x, y, text: selectedText });
             setPopupQuestion('');
         }
         document.addEventListener('mouseup', onDocMouseUp);
@@ -614,11 +887,11 @@ function App() {
     }
 
     function handlePrintText() {
-        void PrintText(markdownRef.current);
+        void PrintText(editorRef.current?.getValue() ?? '');
     }
 
     function handlePrint() {
-        const html = marked(markdownRef.current) as string;
+        const html = marked(editorRef.current?.getValue() ?? '') as string;
         const title = filePathRef.current ? filePathRef.current.split('/').pop() || 'SIRANAI' : 'SIRANAI';
         const fullHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title><style>
             body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:800px;margin:0 auto;padding:20px;line-height:1.6;color:#111;}
@@ -711,171 +984,145 @@ function App() {
         };
     }, []);
 
-    function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-        const meta = e.metaKey || e.ctrlKey;
-
-        if (e.key === 'Tab') {
-            e.preventDefault();
-            const ta = e.currentTarget;
-            const start = ta.selectionStart;
-            const end = ta.selectionEnd;
-            const spaces = '    ';
-            nextCursorRef.current = start + spaces.length;
-            handleContentChange(markdownRef.current.substring(0, start) + spaces + markdownRef.current.substring(end));
-            return;
-        }
-
-        // Enter: continue Markdown prefix (list, blockquote, heading)
-        // Skip during IME composition to avoid interfering with character conversion
-        if (e.key === 'Enter' && !meta) {
-            if (isComposingRef.current || justFinishedCompositionRef.current) return;
-
-            const ta = e.currentTarget;
-            const pos = ta.selectionStart;
-            const val = markdownRef.current;
-            const lineStart = val.lastIndexOf('\n', pos - 1) + 1;
-            const lineEndIdx = val.indexOf('\n', lineStart);
-            const lineEnd = lineEndIdx === -1 ? val.length : lineEndIdx;
-            const currentLine = val.substring(lineStart, lineEnd);
-
-            let m: RegExpMatchArray | null;
-
-            // Unordered list: - / * / +
-            m = currentLine.match(/^(\s*[-*+] )(.*)/);
-            if (m) {
-                const [, prefix, content] = m;
-                e.preventDefault();
-                if (!content) {
-                    const next = val.substring(0, lineStart) + val.substring(lineStart + prefix.length);
-                    nextCursorRef.current = lineStart;
-                    handleContentChange(next);
-                } else {
-                    const next = val.substring(0, pos) + '\n' + prefix + val.substring(pos);
-                    nextCursorRef.current = pos + 1 + prefix.length;
-                    handleContentChange(next);
-                }
-                return;
-            }
-
-            // Ordered list: 1. / 1)
-            m = currentLine.match(/^(\s*)(\d+)([.)]) (.*)/);
-            if (m) {
-                const [, indent, num, sep, content] = m;
-                e.preventDefault();
-                if (!content) {
-                    const prefix = indent + num + sep + ' ';
-                    const next = val.substring(0, lineStart) + val.substring(lineStart + prefix.length);
-                    nextCursorRef.current = lineStart;
-                    handleContentChange(next);
-                } else {
-                    const prefix = indent + (parseInt(num) + 1) + sep + ' ';
-                    const next = val.substring(0, pos) + '\n' + prefix + val.substring(pos);
-                    nextCursorRef.current = pos + 1 + prefix.length;
-                    handleContentChange(next);
-                }
-                return;
-            }
-
-            // Blockquote: >
-            m = currentLine.match(/^(> ?)(.*)/);
-            if (m) {
-                const [, prefix, content] = m;
-                e.preventDefault();
-                if (!content) {
-                    const next = val.substring(0, lineStart) + val.substring(lineStart + prefix.length);
-                    nextCursorRef.current = lineStart;
-                    handleContentChange(next);
-                } else {
-                    const next = val.substring(0, pos) + '\n' + prefix + val.substring(pos);
-                    nextCursorRef.current = pos + 1 + prefix.length;
-                    handleContentChange(next);
-                }
-                return;
-            }
-
-            // Heading: # / ## / ...
-            m = currentLine.match(/^(#{1,6} )(.*)/);
-            if (m) {
-                const [, prefix, content] = m;
-                if (content) {
-                    e.preventDefault();
-                    const next = val.substring(0, pos) + '\n' + prefix + val.substring(pos);
-                    nextCursorRef.current = pos + 1 + prefix.length;
-                    handleContentChange(next);
-                    return;
-                }
-            }
-        }
-
-        if (!meta) return;
-
-        // Shift+Cmd+D: delete current line
-        if (e.shiftKey && e.key === 'D') {
-            e.preventDefault();
-            const ta = e.currentTarget;
-            const pos = ta.selectionStart;
-            const val = markdownRef.current;
-            const lineStart = val.lastIndexOf('\n', pos - 1) + 1;
-            const lineEndIdx = val.indexOf('\n', lineStart);
-            if (lineEndIdx === -1) {
-                // Last line — remove preceding newline too
-                const next = lineStart > 0 ? val.substring(0, lineStart - 1) : '';
-                nextCursorRef.current = Math.max(0, lineStart - 1);
-                handleContentChange(next);
-            } else {
-                const next = val.substring(0, lineStart) + val.substring(lineEndIdx + 1);
-                nextCursorRef.current = lineStart;
-                handleContentChange(next);
-            }
-            return;
-        }
-
-        // Cmd+D: duplicate current line
-        if (!e.shiftKey && e.key === 'd') {
-            e.preventDefault();
-            const ta = e.currentTarget;
-            const pos = ta.selectionStart;
-            const val = markdownRef.current;
-            const lineStart = val.lastIndexOf('\n', pos - 1) + 1;
-            const lineEndIdx = val.indexOf('\n', lineStart);
-            const lineEnd = lineEndIdx === -1 ? val.length : lineEndIdx;
-            const currentLine = val.substring(lineStart, lineEnd);
-            const insert = '\n' + currentLine;
-            const next = val.substring(0, lineEnd) + insert + val.substring(lineEnd);
-            nextCursorRef.current = pos + insert.length;
-            handleContentChange(next);
-            return;
-        }
-
-        if (e.key === 'c') { e.preventDefault(); void doCopy(); return; }
-        if (e.key === 'x') { e.preventDefault(); void doCut();  return; }
-        if (e.key === 'v') { e.preventDefault(); void doPaste(); return; }
-        if (e.key === 'a') { e.preventDefault(); doSelectAll(); return; }
-    }
-
     function insertTable(rows: number, cols: number) {
+        const editor = editorRef.current;
+        const M = monacoRef.current;
         const headers = Array.from({ length: cols }, (_, i) => `見出し${i + 1}`);
         const header = '| ' + headers.join(' | ') + ' |';
         const sep = '|' + Array(cols).fill(' --- ').join('|') + '|';
         const emptyRow = '|' + Array(cols).fill('     ').join('|') + '|';
-        const rowLines = Array(rows - 1).fill(emptyRow);
-        const table = [header, sep, ...rowLines].join('\n');
-        const ta = textareaRef.current;
-        const val = markdownRef.current;
-        const start = ta ? ta.selectionStart : val.length;
-        const before = val.substring(0, start);
-        const after = val.substring(ta ? ta.selectionEnd : val.length);
-        const prefix = before.length > 0 && !before.endsWith('\n') ? '\n' : '';
-        const suffix = after.length > 0 && !after.startsWith('\n') ? '\n' : '';
-        const insert = prefix + table + suffix;
-        nextCursorRef.current = start + insert.length;
-        handleContentChange(before + insert + after);
+        const table = [header, sep, ...Array(rows - 1).fill(emptyRow)].join('\n');
+        if (editor && M) {
+            const sel = editor.getSelection();
+            const pos = sel?.getStartPosition() ?? { lineNumber: 1, column: 1 };
+            const lineContent = editor.getModel()?.getLineContent(pos.lineNumber) ?? '';
+            const prefix = lineContent.trim() ? '\n' : '';
+            const range = sel ?? new M.Range(pos.lineNumber, pos.column, pos.lineNumber, pos.column);
+            editor.executeEdits('insertTable', [{ range, text: prefix + table + '\n' }]);
+        }
         setShowTableDialog(false);
     }
 
-    const charCount = markdown.length;
-    const sectionCount = markdown.split('\n').filter(l => /^#{1,6}\s/.test(l)).length;
-    const lines = markdown.split('\n');
+    const handleEditorMount: OnMount = (editor, monaco) => {
+        editorRef.current = editor;
+        monacoRef.current = monaco;
+
+        // Step 2: Create initial tab model
+        const activeTab = tabs.find(t => t.id === activeTabId);
+        if (activeTab && !tabModelsRef.current.has(activeTab.id)) {
+            const model = monaco.editor.createModel(activeTab.content, 'markdown');
+            tabModelsRef.current.set(activeTab.id, model);
+            editor.setModel(model);
+        }
+
+        // Gruvbox custom theme definition
+        monaco.editor.defineTheme('gruvbox-dark', {
+            base: 'vs-dark', inherit: true,
+            rules: [
+                { token: '', foreground: 'ebdbb2', background: '282828' },
+            ],
+            colors: {
+                'editor.background': '#282828', 'editor.foreground': '#ebdbb2',
+                'editorLineNumber.foreground': '#928374',
+                'editor.selectionBackground': '#504945',
+                'editor.lineHighlightBackground': '#3c3836',
+            },
+        });
+        monaco.editor.setTheme(toMonacoTheme(colorTheme));
+
+        // Scroll sync: editor → preview pane
+        editor.onDidScrollChange(e => {
+            const layoutInfo = editor.getLayoutInfo();
+            const maxScroll = e.scrollHeight - layoutInfo.height;
+            const ratio = maxScroll > 0 ? e.scrollTop / maxScroll : 0;
+            const pane = previewRef.current;
+            if (pane) pane.scrollTop = ratio * (pane.scrollHeight - pane.clientHeight);
+        });
+
+        // Cursor line tracking
+        editor.onDidChangeCursorPosition(e => setCursorLine(e.position.lineNumber));
+
+        // Step 2: Content change - update active tab state (debounced)
+        editor.onDidChangeModelContent(() => {
+            setIsDirty(true);
+            setAiHighlight(null);
+            setCharCount(editor.getModel()?.getValueLength() ?? 0);
+            
+            // Update active tab's content
+            const tabId = activeTabIdRef.current;
+            const updatedTabs = tabs.map(t => {
+                if (t.id === tabId) {
+                    return { ...t, isDirty: true };
+                }
+                return t;
+            });
+            setTabs(updatedTabs);
+            
+            schedulePreviewUpdate();
+        });
+
+        // AI popup: detect selection start
+        editor.onMouseDown(() => { isSelectingRef.current = true; });
+
+        // Cmd+F → custom search panel (suppress Monaco built-in Find)
+        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyF, () => openFind());
+
+        // Tab → 4 spaces
+        editor.addCommand(monaco.KeyCode.Tab, () => {
+            editor.trigger('keyboard', 'type', { text: '    ' });
+        });
+
+        // Enter → Markdown list continuation
+        editor.addCommand(monaco.KeyCode.Enter, () => {
+            const model = editor.getModel();
+            const position = editor.getPosition();
+            if (!model || !position) { editor.trigger('keyboard', 'type', { text: '\n' }); return; }
+            const lineNum = position.lineNumber;
+            const currentLine = model.getLineContent(lineNum);
+            let m: RegExpMatchArray | null;
+
+            m = currentLine.match(/^(\s*[-*+] )(.*)/);
+            if (m) {
+                if (!m[2].trim()) {
+                    editor.executeEdits('enter', [{ range: new monaco.Range(lineNum, 1, lineNum, m[1].length + 1), text: '' }]);
+                } else {
+                    editor.trigger('keyboard', 'type', { text: '\n' + m[1] });
+                }
+                return;
+            }
+            m = currentLine.match(/^(\s*)(\d+)([.)]) (.*)/);
+            if (m) {
+                if (!m[4].trim()) {
+                    editor.executeEdits('enter', [{ range: new monaco.Range(lineNum, 1, lineNum, m[1].length + m[2].length + m[3].length + 2), text: '' }]);
+                } else {
+                    editor.trigger('keyboard', 'type', { text: '\n' + m[1] + (parseInt(m[2]) + 1) + m[3] + ' ' });
+                }
+                return;
+            }
+            m = currentLine.match(/^(> ?)(.*)/);
+            if (m) {
+                if (!m[2].trim()) {
+                    editor.executeEdits('enter', [{ range: new monaco.Range(lineNum, 1, lineNum, m[1].length + 1), text: '' }]);
+                } else {
+                    editor.trigger('keyboard', 'type', { text: '\n' + m[1] });
+                }
+                return;
+            }
+            m = currentLine.match(/^(#{1,6} )(.*)/);
+            if (m && m[2]) { editor.trigger('keyboard', 'type', { text: '\n' + m[1] }); return; }
+
+            editor.trigger('keyboard', 'type', { text: '\n' });
+        });
+
+        // Cmd+D → duplicate line down
+        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyD, () => {
+            editor.trigger('keyboard', 'editor.action.copyLinesDownAction', null);
+        });
+        // Shift+Cmd+D → delete line
+        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyD, () => {
+            editor.trigger('keyboard', 'editor.action.deleteLines', null);
+        });
+    };
 
     const tabStyle = (mode: ViewMode) => ({
         flex: 1, padding: '4px', border: 'none',
@@ -930,6 +1177,37 @@ function App() {
                             <button onClick={() => setShowTableDialog(false)} style={{ background: 'var(--input-bg)', color: 'var(--modal-text)', border: '1px solid var(--input-border)', padding: '5px 14px', borderRadius: '4px', cursor: 'pointer' }}>キャンセル</button>
                             <button onClick={() => insertTable(tableRows, tableCols)} style={{ background: '#2563eb', color: '#fff', border: 'none', padding: '6px 14px', borderRadius: '4px', cursor: 'pointer' }}>挿入</button>
                         </div>
+                    </div>
+                </div>
+            )}
+
+            {/* File warning modal (binary / too large file) */}
+            {fileWarning && (
+                <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 2100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                    onMouseDown={() => setFileWarning(null)}>
+                    <div style={{ background: 'var(--modal-bg)', color: 'var(--modal-text)', borderRadius: '8px', padding: '24px 32px', width: '340px', boxShadow: '0 8px 32px rgba(0,0,0,0.4)', border: '1px solid var(--modal-border)' }}
+                        onMouseDown={e => e.stopPropagation()}>
+                        {fileWarning.type === 'binary' ? (
+                            <>
+                                <h3 style={{ margin: '0 0 12px', fontSize: '16px' }}>バイナリファイル</h3>
+                                <p style={{ margin: '0 0 20px', fontSize: '13px', color: 'var(--modal-secondary-text)', lineHeight: 1.5 }}>
+                                    このファイルはバイナリ形式のため、テキストエディタで開くことができません。
+                                </p>
+                                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                                    <button onClick={() => setFileWarning(null)} style={{ background: '#2563eb', color: '#fff', border: 'none', padding: '6px 20px', borderRadius: '4px', cursor: 'pointer', fontSize: '13px' }}>OK</button>
+                                </div>
+                            </>
+                        ) : (
+                            <>
+                                <h3 style={{ margin: '0 0 12px', fontSize: '16px' }}>ファイルが大きすぎます</h3>
+                                <p style={{ margin: '0 0 20px', fontSize: '13px', color: 'var(--modal-secondary-text)', lineHeight: 1.5 }}>
+                                    このファイルは100MBを超えているため開けません。<br />このアプリで開けるのは100MBまでです。
+                                </p>
+                                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                                    <button onClick={() => setFileWarning(null)} style={{ background: '#2563eb', color: '#fff', border: 'none', padding: '6px 20px', borderRadius: '4px', cursor: 'pointer', fontSize: '13px' }}>OK</button>
+                                </div>
+                            </>
+                        )}
                     </div>
                 </div>
             )}
@@ -1118,6 +1396,81 @@ function App() {
                 <span style={{ marginLeft: 'auto' }}>v{APP_VERSION}</span>
             </div>
 
+            {/* Step 6: Tab bar - hidden when only 1 tab */}
+            {tabs.length > 1 && (
+                <div style={{ display: 'flex', height: '32px', background: 'var(--tab-bar-bg)', borderBottom: '1px solid var(--tab-bar-border)', overflow: 'x' }}>
+                    {tabs.map(tab => (
+                        <div
+                            key={tab.id}
+                            className="tab-item"
+                            draggable
+                            onDragStart={(e) => {
+                                tabDragDataRef.current = { tabId: tab.id };
+                                e.dataTransfer!.effectAllowed = 'move';
+                            }}
+                            onDragEnd={(e) => {
+                                // Step 7: Drag out to create new window
+                                if (e.dataTransfer!.dropEffect === 'none') {
+                                    OpenNewWindow(tab.filePath);
+                                    closeTab(tab.id);
+                                }
+                                tabDragDataRef.current = null;
+                            }}
+                            onDragOver={(e) => {
+                                e.preventDefault();
+                                e.dataTransfer!.dropEffect = 'move';
+                            }}
+                            onDrop={(e) => {
+                                e.preventDefault();
+                                const data = tabDragDataRef.current;
+                                if (data && data.tabId !== tab.id) {
+                                    // Reorder tabs if needed later
+                                }
+                            }}
+                            onClick={() => switchToTab(tab.id)}
+                            style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                padding: '4px 12px',
+                                minWidth: '100px',
+                                maxWidth: '200px',
+                                cursor: 'pointer',
+                                borderRight: '1px solid var(--tab-bar-border)',
+                                background: activeTabId === tab.id ? 'var(--editor-bg)' : 'var(--tab-bar-bg)',
+                                borderBottom: activeTabId === tab.id ? '2px solid #2563eb' : 'none',
+                                color: activeTabId === tab.id ? 'var(--editor-text)' : 'var(--top-bar-color)',
+                                fontWeight: activeTabId === tab.id ? 'bold' : 'normal',
+                                fontSize: '12px',
+                                transition: 'all 0.2s ease',
+                            }}
+                        >
+                            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {tab.isDirty && <span style={{ color: '#f59e0b', marginRight: '4px' }}>●</span>}
+                                {tab.displayName || 'Untitled'}
+                            </span>
+                            <button
+                                className="tab-close"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    closeTab(tab.id);
+                                }}
+                                style={{
+                                    marginLeft: '8px',
+                                    background: 'none',
+                                    border: 'none',
+                                    color: activeTabId === tab.id ? 'var(--editor-text)' : 'var(--top-bar-color)',
+                                    cursor: 'pointer',
+                                    padding: '2px 4px',
+                                    fontSize: '14px',
+                                }}
+                            >
+                                ✕
+                            </button>
+                        </div>
+                    ))}
+                </div>
+            )}
+
             {/* Search / Replace panel */}
             {showSearch && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 10px', borderBottom: '1px solid var(--search-border)', background: 'var(--search-bg)', color: 'var(--editor-text)' }}>
@@ -1139,49 +1492,26 @@ function App() {
             <div ref={containerRef} style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
                 <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
                     {/* Editor area */}
-                    <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-                        {showLineNumbers && (
-                            <div
-                                ref={lineNumbersRef}
-                                style={{ width: '44px', overflowY: 'hidden', textAlign: 'right', padding: '10px 6px 10px 0', fontSize: `${fontSize}px`, lineHeight: '1.5', fontFamily: fontFamily, color: 'var(--line-num-color)', background: 'var(--line-num-bg)', borderRight: '1px solid var(--line-num-border)', userSelect: 'none', flexShrink: 0 }}
-                            >
-                                {lines.map((_, i) => <div key={i}>{i + 1}</div>)}
-                            </div>
-                        )}
-                        <div style={{ flex: 1, position: 'relative', background: 'var(--editor-bg)' }}>
-                        <textarea
-                            ref={textareaRef}
-                            value={markdown}
-                            onChange={e => handleContentChange(e.target.value)}
-                            onKeyDown={handleKeyDown}
-                            onCompositionStart={() => { isComposingRef.current = true; }}
-                            onCompositionEnd={() => {
-                                isComposingRef.current = false;
-                                justFinishedCompositionRef.current = true;
-                                setTimeout(() => { justFinishedCompositionRef.current = false; }, 0);
+                    <div style={{ flex: 1, position: 'relative' }}>
+                        <Editor
+                            height="100%"
+                            language="markdown"
+                            defaultValue={markdown}
+                            onMount={handleEditorMount}
+                            options={{
+                                lineNumbers: showLineNumbers ? 'on' : 'off',
+                                fontSize: fontSize,
+                                fontFamily: fontFamily,
+                                wordWrap: 'on',
+                                minimap: { enabled: false },
+                                scrollBeyondLastLine: false,
+                                automaticLayout: true,
+                                insertSpaces: true,
+                                tabSize: 4,
+                                renderWhitespace: 'none',
+                                overviewRulerLanes: 0,
                             }}
-                            onDrop={e => e.preventDefault()}
-                            onMouseDown={() => { isSelectingRef.current = true; }}
-                            onScroll={handleTextareaScroll}
-                            onClick={updateCursorLine}
-                            onKeyUp={updateCursorLine}
-                            onSelect={updateCursorLine}
-                            style={{ position: 'absolute', inset: 0, padding: '10px', fontSize: `${fontSize}px`, lineHeight: '1.5', resize: 'none', fontFamily: fontFamily, border: 'none', outline: 'none', background: 'transparent', color: 'var(--editor-text)', caretColor: 'var(--editor-text)', boxSizing: 'border-box', width: '100%', height: '100%' }}
-                            placeholder="Enter your markdown here..."
                         />
-                        {aiHighlight && (
-                            <div
-                                ref={overlayRef}
-                                style={{ position: 'absolute', inset: 0, padding: '10px', fontSize: `${fontSize}px`, lineHeight: '1.5', fontFamily: fontFamily, whiteSpace: 'pre-wrap', overflowWrap: 'break-word', color: 'transparent', pointerEvents: 'none', overflow: 'hidden', boxSizing: 'border-box' }}
-                            >
-                                {markdown.substring(0, aiHighlight.start)}
-                                <span style={{ borderBottom: '2px solid #f97316', display: 'inline' }}>
-                                    {markdown.substring(aiHighlight.start, aiHighlight.end)}
-                                </span>
-                                {markdown.substring(aiHighlight.end)}
-                            </div>
-                        )}
-                        </div>
                     </div>
                     {/* Encoding status bar */}
                     <div style={{ position: 'relative', height: '24px', display: 'flex', alignItems: 'center', padding: '0 8px', background: 'var(--encoding-bg)', borderTop: '1px solid var(--encoding-border)', fontSize: '11px', color: 'var(--top-bar-color)' }}>
@@ -1245,7 +1575,10 @@ function App() {
 
                     {/* Preview */}
                     {viewMode === 'preview' && (
-                        <div style={{ flex: 1, padding: '10px', overflowY: 'auto', textAlign: 'left', background: 'var(--editor-bg)', color: 'var(--editor-text)' }}>
+                        <div
+                            ref={previewRef}
+                            style={{ flex: 1, padding: '10px', overflowY: 'auto', textAlign: 'left', background: 'var(--editor-bg)', color: 'var(--editor-text)' }}
+                        >
                             <div className="md-preview" dangerouslySetInnerHTML={{ __html: previewHtml }} />
                         </div>
                     )}
