@@ -935,18 +935,6 @@ function App() {
         (document.body.style as any).userSelect = 'none';
     }
 
-    // Search / Replace - use Monaco's built-in find/replace via trigger()
-    function openFind() {
-        editorRef.current?.trigger('keyboard', 'editor.action.find', null);
-    }
-    function openReplace() {
-        editorRef.current?.trigger('keyboard', 'editor.action.replace', null);
-    }
-    function closeSearch() { 
-        editorRef.current?.trigger('keyboard', 'closeFindWidget', null);
-        editorRef.current?.focus(); 
-    }
-
     // Close popup / encoding menu on click outside
     useEffect(() => {
         function onMouseDown(e: MouseEvent) {
@@ -1097,9 +1085,9 @@ function App() {
             EventsOn('menu:copy',              () => doCopy()),
             EventsOn('menu:paste',             () => doPaste()),
             EventsOn('menu:selectAll',         () => doSelectAll()),
-            EventsOn('menu:find',              () => openFind()),
+            EventsOn('menu:find',              () => editorRef.current?.trigger('keyboard', 'actions.find', null)),
             EventsOn('menu:findNext',          () => editorRef.current?.trigger('keyboard', 'editor.action.nextMatchFindAction', null)),
-            EventsOn('menu:replace',           () => openReplace()),
+            EventsOn('menu:replace',           () => editorRef.current?.trigger('keyboard', 'editor.action.startFindReplaceAction', null)),
             EventsOn('menu:print',             () => handlePrint()),
             EventsOn('menu:printText',         () => handlePrintText()),
             EventsOn('menu:toggleLineNumbers', () => setShowLineNumbers(v => !v)),
@@ -1272,15 +1260,6 @@ function App() {
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyC, () => doCopy());
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyV, () => doPaste());
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyX, () => doCut());
-
-        // Cmd+F → custom search panel (suppress Monaco built-in Find)
-        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyF, () => openFind());
-        // Cmd+H → custom replace panel (suppress Monaco built-in Replace)
-        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyH, () => openReplace());
-        
-        // Disable Monaco's built-in find/replace commands to avoid conflicts
-        // These bind to the same keybindings by default
-        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | monaco.KeyCode.KeyF, () => {});
 
         // Tab → 4 spaces
         editor.addCommand(monaco.KeyCode.Tab, () => {
