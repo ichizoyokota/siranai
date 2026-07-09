@@ -1,4 +1,4 @@
-.PHONY: dev build bundle-libs sign dmg notarize release
+.PHONY: dev build bundle-libs sign dmg notarize release build-windows build-windows-amd64 build-windows-arm64 build-windows-nsis clean-windows
 
 # 署名・公証に必要な設定
 TEAM_ID       := V888BAN3D8
@@ -15,6 +15,33 @@ dev:
 
 build:
 	~/go/bin/wails build
+
+# Windows ビルドターゲット
+build-windows-amd64:
+	@echo "==> Building Windows AMD64 binary..."
+	~/go/bin/wails build -platform windows/amd64
+	@echo "==> Build complete: build/bin/SIRANAI-amd64.exe"
+
+build-windows-arm64:
+	@echo "==> Building Windows ARM64 binary..."
+	~/go/bin/wails build -platform windows/arm64
+	@echo "==> Build complete: build/bin/SIRANAI-arm64.exe"
+
+build-windows: build-windows-amd64 build-windows-arm64
+	@echo "==> Both Windows binaries built successfully!"
+
+build-windows-nsis: build-windows
+	@echo "==> Building NSIS installers..."
+	~/go/bin/wails build -platform windows/amd64 -nsis
+	~/go/bin/wails build -platform windows/arm64 -nsis
+	@echo "==> NSIS installers ready in build/bin/"
+
+clean-windows:
+	@echo "==> Cleaning Windows build artifacts..."
+	@rm -f build/bin/SIRANAI-amd64.exe
+	@rm -f build/bin/SIRANAI-arm64.exe
+	@rm -f build/bin/SIRANAI-*-installer.exe
+	@echo "==> Windows build artifacts cleaned."
 
 bundle-libs: build
 	@echo "==> Adding ja.lproj for Japanese localization..."

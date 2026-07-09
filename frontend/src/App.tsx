@@ -4,7 +4,7 @@ import type * as Monaco from 'monaco-editor/esm/vs/editor/editor.api';
 import appIcon from './assets/images/appicon.png';
 import {marked} from 'marked';
 marked.setOptions({ gfm: true, breaks: false });
-import {ConfirmCloseTab, GetDisplayName, GetPendingFilePath, LoadSettings, OpenFile, OpenFileByPath, OpenNewWindow, PrintHTML, PrintText, QueryAI, ReopenWithEncoding, SaveFile, SaveFileWithEncoding, SaveSettings, SetDirty} from '../wailsjs/go/main/App';
+import {ConfirmCloseTab, GetDisplayName, GetPendingFilePath, LoadSettings, LogMessage, OpenFile, OpenFileByPath, OpenNewWindow, PrintHTML, PrintText, QueryAI, ReopenWithEncoding, SaveFile, SaveFileWithEncoding, SaveSettings, SetDirty} from '../wailsjs/go/main/App';
 import {ClipboardGetText, ClipboardSetText, EventsOn, WindowSetTitle} from '../wailsjs/runtime/runtime';
 import './App.css';
 
@@ -234,6 +234,7 @@ function App() {
     const filePathRef = useRef(filePath);
     const shiftPressedRef = useRef(false);
     const searchInputRef = useRef<HTMLInputElement>(null);
+    const replaceTextRef = useRef<HTMLInputElement>(null);
     const popupQuestionRef = useRef<HTMLInputElement>(null);
     const popupRef = useRef<HTMLDivElement>(null);
     const isSelectingRef = useRef(false);
@@ -405,6 +406,18 @@ function App() {
             const newTabs = prev.filter(t => t.id !== tabId);
             console.log(`setTabs: removed ${tabId}, remaining tabs: ${newTabs.length}`);
             
+            // If no tabs left, create new one
+            if (newTabs.length === 0) {
+                const newTab = makeInitialTab();
+                const M = monacoRef.current;
+                if (M) {
+                    const model = M.editor.createModel(newTab.content, 'markdown');
+                    tabModelsRef.current.set(newTab.id, model);
+                }
+                newTabIdRef.current = newTab.id;
+                return [newTab];
+            }
+            
             // If the closed tab was active, switch to another tab
             if (activeTabId === tabId) {
                 const nextTab = newTabs[0];
@@ -534,9 +547,25 @@ function App() {
             tabModelsRef.current.set(tabId, model);
         }
         
-        // Add tab and switch
+        // Add tab and switch, removing empty Untitled if present
         newTabIdRef.current = tabId;
-        setTabs(prev => [...prev, newTab]);
+        setTabs(prev => {
+            // Remove empty Untitled tab if it exists and no files are open
+            let updatedTabs = prev;
+            if (prev.length === 1) {
+                const lastTab = prev[0];
+                if (!lastTab.filePath && (lastTab.displayName === 'Untitled' || lastTab.displayName.match(/^Untitled \d+$/))) {
+                    // Remove the empty Untitled tab
+                    const model = tabModelsRef.current.get(lastTab.id);
+                    if (model) {
+                        model.dispose();
+                        tabModelsRef.current.delete(lastTab.id);
+                    }
+                    updatedTabs = [];
+                }
+            }
+            return [...updatedTabs, newTab];
+        });
     }
 
     async function handleSave() {
@@ -622,42 +651,82 @@ function App() {
         }
     }
 
-    async function handleOpenPath(path: string) {
-        try {
-            const result = await OpenFileByPath(path);
-            if (!result) return;
-            if (result.isBinary === 'true') { setFileWarning({ type: 'binary' }); return; }
-            if (result.isTooLarge === 'true') { setFileWarning({ type: 'tooLarge' }); return; }
+     async function handleOpenPath(path: string) {
+         try {
+             let result;
+             try {
+                 result = await OpenFileByPath(path);
+             } catch (err: any) {
+                 return;
+             }
             
-            // Always open in new tab
-            const tabId = makeTabId();
-            const displayName = result.path.split('/').pop() || 'File';
-            const newTab: TabState = {
-                id: tabId,
-                filePath: result.path,
-                displayName,
-                content: result.content,
-                fileEncoding: result.encoding ?? 'UTF-8',
-                isDirty: false,
-                cursorLine: 1,
-                charCount: result.content.length,
-                sectionCount: result.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length,
-            };
+             if (!result) {
+                 return;
+             }
+             if (result.isBinary === 'true') {
+                 setFileWarning({ type: 'binary' });
+                 return;
+             }
+             if (result.isTooLarge === 'true') {
+                 setFileWarning({ type: 'tooLarge' });
+                 return;
+             }
             
-            // Create model
-            const M = monacoRef.current;
-            if (M) {
-                const model = M.editor.createModel(result.content, 'markdown');
-                tabModelsRef.current.set(tabId, model);
-            }
+             // Always open in new tab
+             const tabId = makeTabId();
+             const displayName = result.path.split('/').pop() || 'File';
             
-            // Add tab and switch
-            newTabIdRef.current = tabId;
-            setTabs(prev => [...prev, newTab]);
-        } catch (err: any) {
-            console.error('Failed to open file:', err);
-        }
-    }
+             // Validate content is a string
+             if (typeof result.content !== 'string') {
+                 return;
+             }
+            
+             const newTab: TabState = {
+                 id: tabId,
+                 filePath: result.path,
+                 displayName,
+                 content: result.content,
+                 fileEncoding: result.encoding ?? 'UTF-8',
+                 isDirty: false,
+                 cursorLine: 1,
+                 charCount: result.content.length,
+                 sectionCount: result.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length,
+             };
+            
+             // Create model
+             const M = monacoRef.current;
+             if (M) {
+                 try {
+                     const model = M.editor.createModel(result.content, 'markdown');
+                     tabModelsRef.current.set(tabId, model);
+                 } catch (modelErr: any) {
+                     throw modelErr;
+                 }
+             }
+            
+             // Add tab and switch, removing empty Untitled if present
+             newTabIdRef.current = tabId;
+             setTabs(prev => {
+                 // Remove empty Untitled tab if it exists and no files are open
+                 let updatedTabs = prev;
+                 if (prev.length === 1) {
+                     const lastTab = prev[0];
+                     if (!lastTab.filePath && (lastTab.displayName === 'Untitled' || lastTab.displayName.match(/^Untitled \d+$/))) {
+                         // Remove the empty Untitled tab
+                         const model = tabModelsRef.current.get(lastTab.id);
+                         if (model) {
+                             model.dispose();
+                             tabModelsRef.current.delete(lastTab.id);
+                         }
+                         updatedTabs = [];
+                     }
+                 }
+                 return [...updatedTabs, newTab];
+             });
+         } catch (err: any) {
+             // Silent fail - handled by state
+         }
+     }
 
     async function handleReopenWithEncoding(encoding: string) {
         setShowEncodingMenu(false);
@@ -795,6 +864,35 @@ function App() {
 
     async function doPaste() {
         console.log('[doPaste] Called');
+        
+        // Priority 1: If search panel is active, paste into search/replace
+        if (showSearch && searchInputRef.current && searchInputRef.current === document.activeElement) {
+            const text = await ClipboardGetText();
+            if (text) {
+                const start = searchInputRef.current.selectionStart ?? 0;
+                const end = searchInputRef.current.selectionEnd ?? 0;
+                searchInputRef.current.value = searchInputRef.current.value.substring(0, start) + text + searchInputRef.current.value.substring(end);
+                searchInputRef.current.selectionStart = searchInputRef.current.selectionEnd = start + text.length;
+                searchInputRef.current.dispatchEvent(new Event('input', { bubbles: true }));
+                setSearchText(searchInputRef.current.value);
+                console.log('[doPaste] Search input paste completed');
+                return;
+            }
+        }
+        if (showReplace && replaceTextRef.current && replaceTextRef.current === document.activeElement) {
+            const text = await ClipboardGetText();
+            if (text) {
+                const start = replaceTextRef.current.selectionStart ?? 0;
+                const end = replaceTextRef.current.selectionEnd ?? 0;
+                replaceTextRef.current.value = replaceTextRef.current.value.substring(0, start) + text + replaceTextRef.current.value.substring(end);
+                replaceTextRef.current.selectionStart = replaceTextRef.current.selectionEnd = start + text.length;
+                replaceTextRef.current.dispatchEvent(new Event('input', { bubbles: true }));
+                setReplaceText(replaceTextRef.current.value);
+                console.log('[doPaste] Replace input paste completed');
+                return;
+            }
+        }
+        
         const inp = activeInput();
         if (inp) {
             console.log('[doPaste] Active input detected');
@@ -1080,11 +1178,18 @@ function App() {
             EventsOn('file:open',              (path: string) => handleOpenPath(path)),
             EventsOn('file:drop',              (paths: string[]) => {
                 setIsDragOver(false);
-                if (!paths || paths.length === 0) return;
-                if (shiftPressedRef.current) {
-                    insertPathAtCursor(paths[0]);
-                } else {
-                    void handleOpenPath(paths[0]);
+                if (!paths || paths.length === 0) {
+                    return;
+                }
+                try {
+                    if (shiftPressedRef.current) {
+                        insertPathAtCursor(paths[0]);
+                    } else {
+                        void handleOpenPath(paths[0]);
+                    }
+                } catch (error) {
+                    const errMsg = error instanceof Error ? error.message : String(error);
+                    void LogMessage(`[file:drop] Exception: ${errMsg}`);
                 }
             }),
         ];
@@ -1092,6 +1197,19 @@ function App() {
         // Track Shift key for drag-and-drop mode (insert path vs open file)
         function onKeyDown(e: KeyboardEvent) {
             if (e.key === 'Shift') { shiftPressedRef.current = true; setShiftDuringDrag(true); }
+            // Only intercept Cmd+V if search input is focused
+            if ((e.metaKey || e.ctrlKey) && e.key === 'v') {
+                if (searchInputRef.current === document.activeElement) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    void doPaste();
+                } else if (replaceTextRef.current === document.activeElement) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    void doPaste();
+                }
+                // Otherwise let Monaco handle Cmd+V
+            }
         }
         function onKeyUp(e: KeyboardEvent) {
             if (e.key === 'Shift') { shiftPressedRef.current = false; setShiftDuringDrag(false); }
@@ -1178,6 +1296,19 @@ function App() {
             },
         });
         monaco.editor.setTheme(toMonacoTheme(colorTheme));
+
+        // Disable Monaco's built-in drag-and-drop to allow Wails file:drop event
+        const editorDom = editor.getDomNode();
+        if (editorDom) {
+            editorDom.addEventListener('dragover', (e: DragEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+            });
+            editorDom.addEventListener('drop', (e: DragEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+            });
+        }
 
         // Scroll sync: editor → preview pane
         editor.onDidScrollChange(e => {
@@ -1627,10 +1758,18 @@ function App() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 10px', borderBottom: '1px solid var(--search-border)', background: 'var(--search-bg)', color: 'var(--editor-text)' }}>
                     <input ref={searchInputRef} value={searchText} onChange={e => setSearchText(e.target.value)}
                         onKeyDown={e => { if (e.key === 'Enter') findNext(); if (e.key === 'Escape') closeSearch(); }}
+                        onPaste={e => {
+                            const text = e.clipboardData?.getData('text/plain') || '';
+                            setSearchText(text);
+                        }}
                         placeholder="検索..." style={{ padding: '2px 6px', width: '180px', background: 'var(--input-bg)', color: 'var(--editor-text)', border: '1px solid var(--input-border)', borderRadius: '3px' }} />
                     {showReplace && (
-                        <input value={replaceText} onChange={e => setReplaceText(e.target.value)}
+                        <input ref={replaceTextRef} value={replaceText} onChange={e => setReplaceText(e.target.value)}
                             onKeyDown={e => { if (e.key === 'Escape') closeSearch(); }}
+                            onPaste={e => {
+                                const text = e.clipboardData?.getData('text/plain') || '';
+                                setReplaceText(text);
+                            }}
                             placeholder="置換..." style={{ padding: '2px 6px', width: '180px', background: 'var(--input-bg)', color: 'var(--editor-text)', border: '1px solid var(--input-border)', borderRadius: '3px' }} />
                     )}
                     <button onClick={findNext} style={{ padding: '2px 8px', background: 'var(--input-bg)', color: 'var(--editor-text)', border: '1px solid var(--input-border)', borderRadius: '3px', cursor: 'pointer', fontSize: '12px' }}>次へ</button>

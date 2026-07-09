@@ -22,6 +22,10 @@ export function LoadSettings() {
   return window['go']['main']['App']['LoadSettings']();
 }
 
+export function LogMessage(arg1) {
+  return window['go']['main']['App']['LogMessage'](arg1);
+}
+
 export function OpenFile() {
   return window['go']['main']['App']['OpenFile']();
 }

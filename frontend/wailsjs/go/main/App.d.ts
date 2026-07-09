@@ -12,6 +12,8 @@ export function GetPendingFilePath():Promise<string>;
 
 export function LoadSettings():Promise<main.Settings>;
 
+export function LogMessage(arg1:string):Promise<void>;
+
 export function OpenFile():Promise<Record<string, string>>;
 
 export function OpenFileByPath(arg1:string):Promise<Record<string, string>>;

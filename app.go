@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
@@ -53,6 +55,26 @@ func settingsPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "settings.json"), nil
+}
+
+func logFilePath() string {
+	usr, err := user.Current()
+	if err != nil {
+		return "/tmp/siranai.log"
+	}
+	logDir := filepath.Join(usr.HomeDir, "Library", "Logs", "SIRANAI")
+	os.MkdirAll(logDir, 0700)
+	return filepath.Join(logDir, "app.log")
+}
+
+func logMessage(msg string) {
+	logFile, err := os.OpenFile(logFilePath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return
+	}
+	defer logFile.Close()
+	logger := log.New(logFile, "", log.LstdFlags)
+	logger.Println(msg)
 }
 
 // LoadSettings reads settings from disk
@@ -345,6 +367,12 @@ func readFileChecked(path string) (map[string]string, error) {
 // OpenFileByPath opens a file at the given path and returns its content
 func (a *App) OpenFileByPath(path string) (map[string]string, error) {
 	return readFileChecked(path)
+}
+
+// LogMessage records a message from frontend to the log file
+func (a *App) LogMessage(msg string) error {
+	logMessage(fmt.Sprintf("[Frontend] %s", msg))
+	return nil
 }
 
 // ForceOpenFileByPath opens a file ignoring the large-file size limit.
