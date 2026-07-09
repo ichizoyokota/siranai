@@ -21,6 +21,13 @@
         <string>10.13.0</string>
         <key>NSHighResolutionCapable</key>
         <string>true</string>
+        <key>CFBundleLocalizations</key>
+        <array>
+            <string>ja</string>
+            <string>en</string>
+        </array>
+        <key>CFBundleDevelopmentRegion</key>
+        <string>ja</string>
         <key>NSHumanReadableCopyright</key>
         <string>© 2026 Yeees.in</string>
         
@@ -56,10 +63,5 @@
         </array>
         
         
-        <key>NSAppTransportSecurity</key>
-        <dict>
-            <key>NSAllowsLocalNetworking</key>
-            <true/>
-        </dict>
     </dict>
 </plist>
