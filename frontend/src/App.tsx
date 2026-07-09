@@ -168,10 +168,6 @@ function App() {
     const [markdown, setMarkdown] = useState(INITIAL_CONTENT);
     const [filePath, setFilePath] = useState("");
     const [displayPath, setDisplayPath] = useState<string | null>(null);
-    const [showSearch, setShowSearch] = useState(false);
-    const [showReplace, setShowReplace] = useState(false);
-    const [searchText, setSearchText] = useState("");
-    const [replaceText, setReplaceText] = useState("");
 
     const [viewMode, setViewMode] = useState<ViewMode>('preview');
 
@@ -865,34 +861,6 @@ function App() {
     async function doPaste() {
         console.log('[doPaste] Called');
         
-        // Priority 1: If search panel is active, paste into search/replace
-        if (showSearch && searchInputRef.current && searchInputRef.current === document.activeElement) {
-            const text = await ClipboardGetText();
-            if (text) {
-                const start = searchInputRef.current.selectionStart ?? 0;
-                const end = searchInputRef.current.selectionEnd ?? 0;
-                searchInputRef.current.value = searchInputRef.current.value.substring(0, start) + text + searchInputRef.current.value.substring(end);
-                searchInputRef.current.selectionStart = searchInputRef.current.selectionEnd = start + text.length;
-                searchInputRef.current.dispatchEvent(new Event('input', { bubbles: true }));
-                setSearchText(searchInputRef.current.value);
-                console.log('[doPaste] Search input paste completed');
-                return;
-            }
-        }
-        if (showReplace && replaceTextRef.current && replaceTextRef.current === document.activeElement) {
-            const text = await ClipboardGetText();
-            if (text) {
-                const start = replaceTextRef.current.selectionStart ?? 0;
-                const end = replaceTextRef.current.selectionEnd ?? 0;
-                replaceTextRef.current.value = replaceTextRef.current.value.substring(0, start) + text + replaceTextRef.current.value.substring(end);
-                replaceTextRef.current.selectionStart = replaceTextRef.current.selectionEnd = start + text.length;
-                replaceTextRef.current.dispatchEvent(new Event('input', { bubbles: true }));
-                setReplaceText(replaceTextRef.current.value);
-                console.log('[doPaste] Replace input paste completed');
-                return;
-            }
-        }
-        
         const inp = activeInput();
         if (inp) {
             console.log('[doPaste] Active input detected');
@@ -967,55 +935,16 @@ function App() {
         (document.body.style as any).userSelect = 'none';
     }
 
-    // Search / Replace
+    // Search / Replace - use Monaco's built-in find/replace via trigger()
     function openFind() {
-        setShowSearch(true); setShowReplace(false);
-        requestAnimationFrame(() => searchInputRef.current?.focus());
+        editorRef.current?.trigger('keyboard', 'editor.action.find', null);
     }
     function openReplace() {
-        setShowSearch(true); setShowReplace(true);
-        requestAnimationFrame(() => searchInputRef.current?.focus());
+        editorRef.current?.trigger('keyboard', 'editor.action.replace', null);
     }
-    function closeSearch() { setShowSearch(false); editorRef.current?.focus(); }
-
-    function findNext() {
-        const editor = editorRef.current;
-        if (!editor || !searchText) return;
-        const model = editor.getModel();
-        if (!model) return;
-        const pos = editor.getPosition() ?? { lineNumber: 1, column: 1 };
-        const matches = model.findMatches(searchText, false, false, false, null, false);
-        if (!matches.length) return;
-        const next = matches.find(m =>
-            m.range.startLineNumber > pos.lineNumber ||
-            (m.range.startLineNumber === pos.lineNumber && m.range.startColumn > pos.column)
-        ) ?? matches[0];
-        editor.setSelection(next.range);
-        editor.revealRangeInCenter(next.range);
-    }
-
-    function doReplace() {
-        const editor = editorRef.current;
-        if (!editor || !searchText) return;
-        const sel = editor.getSelection();
-        const model = editor.getModel();
-        if (sel && model?.getValueInRange(sel) === searchText) {
-            editor.executeEdits('replace', [{ range: sel, text: replaceText }]);
-            findNext();
-        } else {
-            findNext();
-        }
-    }
-
-    function doReplaceAll() {
-        const editor = editorRef.current;
-        const model = editor?.getModel();
-        if (!editor || !model || !searchText) return;
-        const edits = model.findMatches(searchText, false, false, false, null, false)
-            .map(m => ({ range: m.range, text: replaceText }));
-        if (edits.length) {
-            editor.executeEdits('replaceAll', edits);
-        }
+    function closeSearch() { 
+        editorRef.current?.trigger('keyboard', 'closeFindWidget', null);
+        editorRef.current?.focus(); 
     }
 
     // Close popup / encoding menu on click outside
@@ -1169,7 +1098,7 @@ function App() {
             EventsOn('menu:paste',             () => doPaste()),
             EventsOn('menu:selectAll',         () => doSelectAll()),
             EventsOn('menu:find',              () => openFind()),
-            EventsOn('menu:findNext',          () => findNext()),
+            EventsOn('menu:findNext',          () => editorRef.current?.trigger('keyboard', 'editor.action.nextMatchFindAction', null)),
             EventsOn('menu:replace',           () => openReplace()),
             EventsOn('menu:print',             () => handlePrint()),
             EventsOn('menu:printText',         () => handlePrintText()),
@@ -1197,19 +1126,6 @@ function App() {
         // Track Shift key for drag-and-drop mode (insert path vs open file)
         function onKeyDown(e: KeyboardEvent) {
             if (e.key === 'Shift') { shiftPressedRef.current = true; setShiftDuringDrag(true); }
-            // Only intercept Cmd+V if search input is focused
-            if ((e.metaKey || e.ctrlKey) && e.key === 'v') {
-                if (searchInputRef.current === document.activeElement) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    void doPaste();
-                } else if (replaceTextRef.current === document.activeElement) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    void doPaste();
-                }
-                // Otherwise let Monaco handle Cmd+V
-            }
         }
         function onKeyUp(e: KeyboardEvent) {
             if (e.key === 'Shift') { shiftPressedRef.current = false; setShiftDuringDrag(false); }
@@ -1359,6 +1275,12 @@ function App() {
 
         // Cmd+F → custom search panel (suppress Monaco built-in Find)
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyF, () => openFind());
+        // Cmd+H → custom replace panel (suppress Monaco built-in Replace)
+        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyH, () => openReplace());
+        
+        // Disable Monaco's built-in find/replace commands to avoid conflicts
+        // These bind to the same keybindings by default
+        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Alt | monaco.KeyCode.KeyF, () => {});
 
         // Tab → 4 spaces
         editor.addCommand(monaco.KeyCode.Tab, () => {
@@ -1753,30 +1675,7 @@ function App() {
                     ))}
                 </div>
 
-            {/* Search / Replace panel */}
-            {showSearch && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 10px', borderBottom: '1px solid var(--search-border)', background: 'var(--search-bg)', color: 'var(--editor-text)' }}>
-                    <input ref={searchInputRef} value={searchText} onChange={e => setSearchText(e.target.value)}
-                        onKeyDown={e => { if (e.key === 'Enter') findNext(); if (e.key === 'Escape') closeSearch(); }}
-                        onPaste={e => {
-                            const text = e.clipboardData?.getData('text/plain') || '';
-                            setSearchText(text);
-                        }}
-                        placeholder="検索..." style={{ padding: '2px 6px', width: '180px', background: 'var(--input-bg)', color: 'var(--editor-text)', border: '1px solid var(--input-border)', borderRadius: '3px' }} />
-                    {showReplace && (
-                        <input ref={replaceTextRef} value={replaceText} onChange={e => setReplaceText(e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Escape') closeSearch(); }}
-                            onPaste={e => {
-                                const text = e.clipboardData?.getData('text/plain') || '';
-                                setReplaceText(text);
-                            }}
-                            placeholder="置換..." style={{ padding: '2px 6px', width: '180px', background: 'var(--input-bg)', color: 'var(--editor-text)', border: '1px solid var(--input-border)', borderRadius: '3px' }} />
-                    )}
-                    <button onClick={findNext} style={{ padding: '2px 8px', background: 'var(--input-bg)', color: 'var(--editor-text)', border: '1px solid var(--input-border)', borderRadius: '3px', cursor: 'pointer', fontSize: '12px' }}>次へ</button>
-                    {showReplace && (<><button onClick={doReplace} style={{ padding: '2px 8px', background: 'var(--input-bg)', color: 'var(--editor-text)', border: '1px solid var(--input-border)', borderRadius: '3px', cursor: 'pointer', fontSize: '12px' }}>置換</button><button onClick={doReplaceAll} style={{ padding: '2px 8px', background: 'var(--input-bg)', color: 'var(--editor-text)', border: '1px solid var(--input-border)', borderRadius: '3px', cursor: 'pointer', fontSize: '12px' }}>すべて置換</button></>)}
-                    <button onClick={closeSearch} style={{ marginLeft: 'auto', padding: '2px 8px', background: 'var(--input-bg)', color: 'var(--editor-text)', border: '1px solid var(--input-border)', borderRadius: '3px', cursor: 'pointer', fontSize: '12px' }}>✕</button>
-                </div>
-            )}
+            {/* Search / Replace panel is now handled by Monaco built-in */}
 
             {/* Editor + Right pane */}
             <div ref={containerRef} style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
