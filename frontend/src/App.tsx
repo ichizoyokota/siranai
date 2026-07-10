@@ -246,6 +246,7 @@ function App() {
     const decorationIdsRef = useRef<string[]>([]);
     const previewRef = useRef<HTMLDivElement>(null);
     const previewUpdateTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const monacoWidgetVisibleRef = useRef(false);
 
     // Step 1: Tab refs
     const tabModelsRef = useRef<Map<string, Monaco.editor.ITextModel>>(new Map());
@@ -1015,11 +1016,42 @@ function App() {
     }, []);
 
     // Close AI popup when Monaco widgets (find, replace, command palette) are shown
+    // Restore popup when they are hidden (if text is still selected)
     useEffect(() => {
         const observer = new MutationObserver(() => {
-            if (isMonacoWidgetVisible() && popup) {
-                setPopup(null);
-                setAiHighlight(null);
+            const isWidgetVisible = isMonacoWidgetVisible();
+            const wasWidgetVisible = monacoWidgetVisibleRef.current;
+            
+            if (isWidgetVisible) {
+                // Widget became visible: close popup
+                monacoWidgetVisibleRef.current = true;
+                if (popup) {
+                    setPopup(null);
+                    setAiHighlight(null);
+                }
+            } else if (wasWidgetVisible && !isWidgetVisible) {
+                // Widget became hidden: restore popup if there's still a selection
+                monacoWidgetVisibleRef.current = false;
+                if (aiHighlight && !popup) {
+                    const editor = editorRef.current;
+                    if (editor) {
+                        const model = editor.getModel();
+                        if (model) {
+                            const selection = editor.getSelection();
+                            if (selection && !selection.isEmpty()) {
+                                const selectedText = model.getValueInRange(selection).trim();
+                                if (selectedText) {
+                                    // Restore popup at last known position or center of screen
+                                    const POPUP_W = 290;
+                                    const x = Math.min(Math.max(window.innerWidth / 2 - POPUP_W / 2, 8), window.innerWidth - POPUP_W - 8);
+                                    const y = 100;
+                                    setPopup({ x, y, text: selectedText });
+                                    setPopupQuestion('');
+                                }
+                            }
+                        }
+                    }
+                }
             }
         });
         
@@ -1031,7 +1063,7 @@ function App() {
         });
         
         return () => observer.disconnect();
-    }, [popup]);
+    }, [aiHighlight, popup]);
 
     function pushToHistory(providerName: string, response: string, error: string) {
         if (response || error) {
