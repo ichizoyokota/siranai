@@ -961,15 +961,36 @@ function App() {
     function isMonacoWidgetVisible(): boolean {
         // Check if find widget is visible
         const findWidget = document.querySelector('.find-widget');
-        if (findWidget && (findWidget as HTMLElement).offsetParent !== null) return true;
+        if (findWidget) {
+            const computedStyle = window.getComputedStyle(findWidget as HTMLElement);
+            const isVisible = (findWidget as HTMLElement).offsetParent !== null && 
+                             computedStyle.display !== 'none' && 
+                             computedStyle.visibility !== 'hidden' &&
+                             (findWidget as HTMLElement).offsetHeight > 0;
+            if (isVisible) return true;
+        }
         
         // Check if replace widget is visible
         const replaceWidget = document.querySelector('.replace-widget');
-        if (replaceWidget && (replaceWidget as HTMLElement).offsetParent !== null) return true;
+        if (replaceWidget) {
+            const computedStyle = window.getComputedStyle(replaceWidget as HTMLElement);
+            const isVisible = (replaceWidget as HTMLElement).offsetParent !== null && 
+                             computedStyle.display !== 'none' && 
+                             computedStyle.visibility !== 'hidden' &&
+                             (replaceWidget as HTMLElement).offsetHeight > 0;
+            if (isVisible) return true;
+        }
         
         // Check if command palette is visible
         const quickOpenWidget = document.querySelector('.quick-open-widget');
-        if (quickOpenWidget && (quickOpenWidget as HTMLElement).offsetParent !== null) return true;
+        if (quickOpenWidget) {
+            const computedStyle = window.getComputedStyle(quickOpenWidget as HTMLElement);
+            const isVisible = (quickOpenWidget as HTMLElement).offsetParent !== null && 
+                             computedStyle.display !== 'none' && 
+                             computedStyle.visibility !== 'hidden' &&
+                             (quickOpenWidget as HTMLElement).offsetHeight > 0;
+            if (isVisible) return true;
+        }
         
         return false;
     }
@@ -1018,19 +1039,19 @@ function App() {
     // Close AI popup when Monaco widgets (find, replace, command palette) are shown
     // Restore popup when they are hidden (if text is still selected)
     useEffect(() => {
-        const observer = new MutationObserver(() => {
+        const checkWidgetVisibility = () => {
             const isWidgetVisible = isMonacoWidgetVisible();
             const wasWidgetVisible = monacoWidgetVisibleRef.current;
             
-            if (isWidgetVisible) {
-                // Widget became visible: close popup
+            if (isWidgetVisible && !wasWidgetVisible) {
+                // Widget just became visible: close popup
                 monacoWidgetVisibleRef.current = true;
                 if (popup) {
                     setPopup(null);
                     setAiHighlight(null);
                 }
-            } else if (wasWidgetVisible && !isWidgetVisible) {
-                // Widget became hidden: restore popup if there's still a selection
+            } else if (!isWidgetVisible && wasWidgetVisible) {
+                // Widget just became hidden: restore popup if there's still a selection
                 monacoWidgetVisibleRef.current = false;
                 if (aiHighlight && !popup) {
                     const editor = editorRef.current;
@@ -1041,7 +1062,7 @@ function App() {
                             if (selection && !selection.isEmpty()) {
                                 const selectedText = model.getValueInRange(selection).trim();
                                 if (selectedText) {
-                                    // Restore popup at last known position or center of screen
+                                    // Restore popup at center position
                                     const POPUP_W = 290;
                                     const x = Math.min(Math.max(window.innerWidth / 2 - POPUP_W / 2, 8), window.innerWidth - POPUP_W - 8);
                                     const y = 100;
@@ -1053,16 +1074,50 @@ function App() {
                     }
                 }
             }
+        };
+        
+        // Listen for keyboard events to detect widget open/close
+        function onKeyDown(e: KeyboardEvent) {
+            // Cmd+F (Mac) or Ctrl+F (Windows/Linux) opens find
+            if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
+                setTimeout(() => {
+                    if (isMonacoWidgetVisible()) {
+                        monacoWidgetVisibleRef.current = true;
+                        if (popup) {
+                            setPopup(null);
+                            setAiHighlight(null);
+                        }
+                    }
+                }, 50);
+            }
+            // Escape closes widgets
+            if (e.key === 'Escape') {
+                setTimeout(() => {
+                    checkWidgetVisibility();
+                }, 50);
+            }
+        }
+        
+        // Periodic check for widget visibility changes (fallback)
+        const intervalId = setInterval(checkWidgetVisibility, 300);
+        
+        // MutationObserver for DOM changes
+        const observer = new MutationObserver(() => {
+            checkWidgetVisibility();
         });
         
-        // Observe changes in the document for Monaco widget visibility
+        document.addEventListener('keydown', onKeyDown);
         observer.observe(document.body, {
             attributes: true,
             subtree: true,
             attributeFilter: ['style', 'class'],
         });
         
-        return () => observer.disconnect();
+        return () => {
+            clearInterval(intervalId);
+            document.removeEventListener('keydown', onKeyDown);
+            observer.disconnect();
+        };
     }, [aiHighlight, popup]);
 
     function pushToHistory(providerName: string, response: string, error: string) {
