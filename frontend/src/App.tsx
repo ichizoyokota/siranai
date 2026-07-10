@@ -71,7 +71,7 @@ interface AIProviderConfig {
     enabled: boolean;
 }
 
-const APP_VERSION = '0.1.5';
+const APP_VERSION = '0.1.6';
 
 const PROVIDER_MODELS: Record<string, string[]> = {
     gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite', 'gemini-flash-latest', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'],
@@ -1812,11 +1812,6 @@ function App() {
                     </div>
                 );
             })()}
-
-            {/* Top bar */}
-            <div style={{ height: '22px', display: 'flex', alignItems: 'center', padding: '0 10px', background: 'var(--top-bar-bg)', borderBottom: '1px solid var(--top-bar-border)', fontSize: '11px', color: 'var(--top-bar-color)', flexShrink: 0, userSelect: 'none' }}>
-                <span style={{ marginLeft: 'auto' }}>v{APP_VERSION}</span>
-            </div>
 
             {/* Step 6: Tab bar - always visible */}
             <div style={{ display: 'flex', height: '32px', background: 'var(--tab-bar-bg)', borderBottom: '1px solid var(--tab-bar-border)', overflow: 'x' }}>
