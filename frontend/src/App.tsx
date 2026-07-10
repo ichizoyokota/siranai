@@ -962,7 +962,6 @@ function App() {
         const editor = editorRef.current;
         if (!editor) return false;
         
-        // Try to use Monaco's internal API to check widget visibility
         // Check if any of the known widget containers have interactive elements
         const findInput = document.querySelector('.find-widget input') as HTMLElement | null;
         const replaceInput = document.querySelector('.replace-widget input') as HTMLElement | null;
@@ -975,77 +974,94 @@ function App() {
             return true;
         }
         
-        // Check using parent container visibility
+        // Check using detailed DOM inspection
         const findContainer = document.querySelector('.find-widget') as HTMLElement | null;
         if (findContainer) {
-            const parent = findContainer.parentElement;
-            if (parent) {
-                const parentStyle = window.getComputedStyle(parent);
-                // Check if parent is hidden
-                if (parentStyle.display === 'none' || parentStyle.visibility === 'hidden') {
+            // Check parent hierarchy for hidden state
+            let element: HTMLElement | null = findContainer;
+            while (element) {
+                const style = window.getComputedStyle(element);
+                if (style.display === 'none' || style.visibility === 'hidden') {
                     return false;
                 }
-            }
-            
-            // Check if the container itself is truly interactive
-            const style = window.getComputedStyle(findContainer);
-            if (style.pointerEvents === 'none') {
-                return false;
-            }
-            
-            // If it has actual height and is not off-screen
-            if (findContainer.offsetHeight > 0 && style.visibility !== 'hidden' && style.opacity !== '0') {
-                // Final check: see if it's actually responding to inputs (has focus-within or is visible in viewport)
-                const rect = findContainer.getBoundingClientRect();
-                if (rect.height > 0 && rect.top < window.innerHeight) {
-                    return true;
+                // Check for hidden class or aria-hidden
+                if (element.classList.contains('hidden') || 
+                    element.getAttribute('aria-hidden') === 'true' ||
+                    element.getAttribute('hidden') !== null) {
+                    return false;
                 }
+                element = element.parentElement;
+            }
+            
+            // Check if it's in viewport
+            const rect = findContainer.getBoundingClientRect();
+            const isInViewport = rect.height > 0 && 
+                                rect.width > 0 && 
+                                rect.top < window.innerHeight && 
+                                rect.left < window.innerWidth &&
+                                rect.bottom > 0 &&
+                                rect.right > 0;
+            
+            if (isInViewport) {
+                return true;
             }
         }
         
         const replaceContainer = document.querySelector('.replace-widget') as HTMLElement | null;
         if (replaceContainer) {
-            const parent = replaceContainer.parentElement;
-            if (parent) {
-                const parentStyle = window.getComputedStyle(parent);
-                if (parentStyle.display === 'none' || parentStyle.visibility === 'hidden') {
+            let element: HTMLElement | null = replaceContainer;
+            while (element) {
+                const style = window.getComputedStyle(element);
+                if (style.display === 'none' || style.visibility === 'hidden') {
                     return false;
                 }
-            }
-            
-            const style = window.getComputedStyle(replaceContainer);
-            if (style.pointerEvents === 'none') {
-                return false;
-            }
-            
-            if (replaceContainer.offsetHeight > 0 && style.visibility !== 'hidden' && style.opacity !== '0') {
-                const rect = replaceContainer.getBoundingClientRect();
-                if (rect.height > 0 && rect.top < window.innerHeight) {
-                    return true;
+                if (element.classList.contains('hidden') || 
+                    element.getAttribute('aria-hidden') === 'true' ||
+                    element.getAttribute('hidden') !== null) {
+                    return false;
                 }
+                element = element.parentElement;
+            }
+            
+            const rect = replaceContainer.getBoundingClientRect();
+            const isInViewport = rect.height > 0 && 
+                                rect.width > 0 && 
+                                rect.top < window.innerHeight && 
+                                rect.left < window.innerWidth &&
+                                rect.bottom > 0 &&
+                                rect.right > 0;
+            
+            if (isInViewport) {
+                return true;
             }
         }
         
         const quickContainer = document.querySelector('.quick-open-widget') as HTMLElement | null;
         if (quickContainer) {
-            const parent = quickContainer.parentElement;
-            if (parent) {
-                const parentStyle = window.getComputedStyle(parent);
-                if (parentStyle.display === 'none' || parentStyle.visibility === 'hidden') {
+            let element: HTMLElement | null = quickContainer;
+            while (element) {
+                const style = window.getComputedStyle(element);
+                if (style.display === 'none' || style.visibility === 'hidden') {
                     return false;
                 }
-            }
-            
-            const style = window.getComputedStyle(quickContainer);
-            if (style.pointerEvents === 'none') {
-                return false;
-            }
-            
-            if (quickContainer.offsetHeight > 0 && style.visibility !== 'hidden' && style.opacity !== '0') {
-                const rect = quickContainer.getBoundingClientRect();
-                if (rect.height > 0 && rect.top < window.innerHeight) {
-                    return true;
+                if (element.classList.contains('hidden') || 
+                    element.getAttribute('aria-hidden') === 'true' ||
+                    element.getAttribute('hidden') !== null) {
+                    return false;
                 }
+                element = element.parentElement;
+            }
+            
+            const rect = quickContainer.getBoundingClientRect();
+            const isInViewport = rect.height > 0 && 
+                                rect.width > 0 && 
+                                rect.top < window.innerHeight && 
+                                rect.left < window.innerWidth &&
+                                rect.bottom > 0 &&
+                                rect.right > 0;
+            
+            if (isInViewport) {
+                return true;
             }
         }
         
@@ -1068,8 +1084,10 @@ function App() {
                 // Also check the ref-based state as a backup
                 const widgetVisible = isMonacoWidgetVisible();
                 const findWidget = document.querySelector('.find-widget') as HTMLElement | null;
-                const findStyle = findWidget ? window.getComputedStyle(findWidget) : null;
-                console.warn('[POPUP] MouseUp: widgetVisible=', widgetVisible, 'pointerEvents=', findStyle?.pointerEvents, 'opacity=', findStyle?.opacity, 'monacoRef=', monacoWidgetVisibleRef.current);
+                const findRect = findWidget?.getBoundingClientRect();
+                const findClasses = findWidget?.className || '';
+                const findAriaHidden = findWidget?.getAttribute('aria-hidden');
+                console.warn('[POPUP] MouseUp: widgetVisible=', widgetVisible, 'classes=', findClasses, 'aria-hidden=', findAriaHidden, 'rect.top=', findRect?.top);
                 if (widgetVisible || monacoWidgetVisibleRef.current) {
                     console.warn('[POPUP] Skipping popup due to widget visibility');
                     setPopup(null);
@@ -1153,11 +1171,36 @@ function App() {
                     }
                 }, 50);
             }
-            // Escape closes widgets
+            // Escape closes widgets - force reset ref and check after delay
             if (e.key === 'Escape') {
+                // First, immediately mark as potentially closed
+                monacoWidgetVisibleRef.current = false;
+                
+                // Then check more thoroughly after a delay to give Monaco time to update
                 setTimeout(() => {
                     checkWidgetVisibility();
-                }, 50);
+                    
+                    // If widget is now confirmed closed and we have a selection, restore popup
+                    if (!monacoWidgetVisibleRef.current && aiHighlight && !popup) {
+                        const editor = editorRef.current;
+                        if (editor) {
+                            const model = editor.getModel();
+                            if (model) {
+                                const selection = editor.getSelection();
+                                if (selection && !selection.isEmpty()) {
+                                    const selectedText = model.getValueInRange(selection).trim();
+                                    if (selectedText) {
+                                        const POPUP_W = 290;
+                                        const x = Math.min(Math.max(window.innerWidth / 2 - POPUP_W / 2, 8), window.innerWidth - POPUP_W - 8);
+                                        const y = 100;
+                                        setPopup({ x, y, text: selectedText });
+                                        setPopupQuestion('');
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }, 150);
             }
         }
         
