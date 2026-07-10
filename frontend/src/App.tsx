@@ -960,36 +960,52 @@ function App() {
     // Check if Monaco widgets (find, replace, command palette) are visible
     function isMonacoWidgetVisible(): boolean {
         // Check if find widget is visible
-        const findWidget = document.querySelector('.find-widget');
+        const findWidget = document.querySelector('.find-widget') as HTMLElement | null;
         if (findWidget) {
-            const computedStyle = window.getComputedStyle(findWidget as HTMLElement);
-            const isVisible = (findWidget as HTMLElement).offsetParent !== null && 
-                             computedStyle.display !== 'none' && 
-                             computedStyle.visibility !== 'hidden' &&
-                             (findWidget as HTMLElement).offsetHeight > 0;
-            if (isVisible) return true;
+            // Check multiple conditions to ensure it's truly visible
+            const computedStyle = window.getComputedStyle(findWidget);
+            const isHidden = computedStyle.display === 'none' || 
+                            computedStyle.visibility === 'hidden' ||
+                            computedStyle.opacity === '0' ||
+                            findWidget.offsetHeight === 0 ||
+                            findWidget.offsetWidth === 0;
+            
+            if (!isHidden && findWidget.offsetParent !== null) {
+                console.warn('[POPUP] Find widget visible: display=', computedStyle.display, 'height=', findWidget.offsetHeight);
+                return true;
+            }
         }
         
         // Check if replace widget is visible
-        const replaceWidget = document.querySelector('.replace-widget');
+        const replaceWidget = document.querySelector('.replace-widget') as HTMLElement | null;
         if (replaceWidget) {
-            const computedStyle = window.getComputedStyle(replaceWidget as HTMLElement);
-            const isVisible = (replaceWidget as HTMLElement).offsetParent !== null && 
-                             computedStyle.display !== 'none' && 
-                             computedStyle.visibility !== 'hidden' &&
-                             (replaceWidget as HTMLElement).offsetHeight > 0;
-            if (isVisible) return true;
+            const computedStyle = window.getComputedStyle(replaceWidget);
+            const isHidden = computedStyle.display === 'none' || 
+                            computedStyle.visibility === 'hidden' ||
+                            computedStyle.opacity === '0' ||
+                            replaceWidget.offsetHeight === 0 ||
+                            replaceWidget.offsetWidth === 0;
+            
+            if (!isHidden && replaceWidget.offsetParent !== null) {
+                console.warn('[POPUP] Replace widget visible: display=', computedStyle.display, 'height=', replaceWidget.offsetHeight);
+                return true;
+            }
         }
         
         // Check if command palette is visible
-        const quickOpenWidget = document.querySelector('.quick-open-widget');
+        const quickOpenWidget = document.querySelector('.quick-open-widget') as HTMLElement | null;
         if (quickOpenWidget) {
-            const computedStyle = window.getComputedStyle(quickOpenWidget as HTMLElement);
-            const isVisible = (quickOpenWidget as HTMLElement).offsetParent !== null && 
-                             computedStyle.display !== 'none' && 
-                             computedStyle.visibility !== 'hidden' &&
-                             (quickOpenWidget as HTMLElement).offsetHeight > 0;
-            if (isVisible) return true;
+            const computedStyle = window.getComputedStyle(quickOpenWidget);
+            const isHidden = computedStyle.display === 'none' || 
+                            computedStyle.visibility === 'hidden' ||
+                            computedStyle.opacity === '0' ||
+                            quickOpenWidget.offsetHeight === 0 ||
+                            quickOpenWidget.offsetWidth === 0;
+            
+            if (!isHidden && quickOpenWidget.offsetParent !== null) {
+                console.warn('[POPUP] Cmd palette visible: display=', computedStyle.display, 'height=', quickOpenWidget.offsetHeight);
+                return true;
+            }
         }
         
         return false;
@@ -999,21 +1015,25 @@ function App() {
         function onDocMouseUp(e: MouseEvent) {
             if (!isSelectingRef.current) return;
             isSelectingRef.current = false;
-            
+             
             // Wait a bit to see if user is copying
             setTimeout(() => {
                 if (copyingRef.current) {
                     copyingRef.current = false;
                     return;
                 }
-                
-                // Don't show AI popup if Monaco widgets are visible
-                if (isMonacoWidgetVisible()) {
+                 
+                // Don't show AI popup if Monaco widgets are currently visible (check current state)
+                // Also check the ref-based state as a backup
+                const widgetVisible = isMonacoWidgetVisible();
+                console.warn('[POPUP] MouseUp: widgetVisible=', widgetVisible, 'monacoWidgetVisibleRef=', monacoWidgetVisibleRef.current);
+                if (widgetVisible || monacoWidgetVisibleRef.current) {
+                    console.warn('[POPUP] Skipping popup due to widget visibility');
                     setPopup(null);
                     setAiHighlight(null);
                     return;
                 }
-                
+                 
                 const editor = editorRef.current;
                 if (!editor) return;
                 const sel = editor.getSelection();
