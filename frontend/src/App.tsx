@@ -955,6 +955,24 @@ function App() {
     // Text selection → AI popup (Monaco API)
     // Skip popup if user is copying (Cmd+C pressed within 200ms of mouseup)
     const copyingRef = useRef(false);
+    
+    // Check if Monaco widgets (find, replace, command palette) are visible
+    function isMonacoWidgetVisible(): boolean {
+        // Check if find widget is visible
+        const findWidget = document.querySelector('.find-widget');
+        if (findWidget && (findWidget as HTMLElement).offsetParent !== null) return true;
+        
+        // Check if replace widget is visible
+        const replaceWidget = document.querySelector('.replace-widget');
+        if (replaceWidget && (replaceWidget as HTMLElement).offsetParent !== null) return true;
+        
+        // Check if command palette is visible
+        const quickOpenWidget = document.querySelector('.quick-open-widget');
+        if (quickOpenWidget && (quickOpenWidget as HTMLElement).offsetParent !== null) return true;
+        
+        return false;
+    }
+    
     useEffect(() => {
         function onDocMouseUp(e: MouseEvent) {
             if (!isSelectingRef.current) return;
@@ -964,6 +982,13 @@ function App() {
             setTimeout(() => {
                 if (copyingRef.current) {
                     copyingRef.current = false;
+                    return;
+                }
+                
+                // Don't show AI popup if Monaco widgets are visible
+                if (isMonacoWidgetVisible()) {
+                    setPopup(null);
+                    setAiHighlight(null);
                     return;
                 }
                 
@@ -988,6 +1013,25 @@ function App() {
         document.addEventListener('mouseup', onDocMouseUp);
         return () => document.removeEventListener('mouseup', onDocMouseUp);
     }, []);
+
+    // Close AI popup when Monaco widgets (find, replace, command palette) are shown
+    useEffect(() => {
+        const observer = new MutationObserver(() => {
+            if (isMonacoWidgetVisible() && popup) {
+                setPopup(null);
+                setAiHighlight(null);
+            }
+        });
+        
+        // Observe changes in the document for Monaco widget visibility
+        observer.observe(document.body, {
+            attributes: true,
+            subtree: true,
+            attributeFilter: ['style', 'class'],
+        });
+        
+        return () => observer.disconnect();
+    }, [popup]);
 
     function pushToHistory(providerName: string, response: string, error: string) {
         if (response || error) {
