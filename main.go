@@ -79,6 +79,10 @@ func main() {
 	editMenu.AddText("Select All", nil, func(_ *menu.CallbackData) {
 		runtime.EventsEmit(app.ctx, "menu:selectAll")
 	})
+	editMenu.AddSeparator()
+	editMenu.AddText("Insert Link...", keys.CmdOrCtrl("k"), func(_ *menu.CallbackData) {
+		runtime.EventsEmit(app.ctx, "menu:insertLink")
+	})
 
 	// Search menu
 	searchMenu := appMenu.AddSubmenu("Search")

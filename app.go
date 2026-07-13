@@ -605,6 +605,26 @@ func (a *App) OpenFile() (map[string]string, error) {
 	return readFileChecked(path)
 }
 
+// SelectFileForLink opens a file dialog for selecting a file to link and returns its absolute path
+func (a *App) SelectFileForLink() (string, error) {
+	path, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Select File to Link",
+		Filters: []runtime.FileFilter{
+			{DisplayName: "All Files", Pattern: "*"},
+			{DisplayName: "Markdown (*.md)", Pattern: "*.md"},
+			{DisplayName: "Text (*.txt)", Pattern: "*.txt"},
+			{DisplayName: "HTML (*.html)", Pattern: "*.html"},
+			{DisplayName: "CSV (*.csv)", Pattern: "*.csv"},
+			{DisplayName: "JSON (*.json)", Pattern: "*.json"},
+			{DisplayName: "Images", Pattern: "*.{jpg,jpeg,png,gif,svg,webp}"},
+		},
+	})
+	if err != nil || path == "" {
+		return "", err
+	}
+	return path, nil
+}
+
 // SaveFile saves content to the given path, or opens a save dialog if path is empty
 func (a *App) SaveFile(path string, content string) (string, error) {
 	fmt.Printf("[DEBUG SaveFile] INPUT: path=%q (len=%d, empty=%v), content_len=%d\n", path, len(path), path == "", len(content))

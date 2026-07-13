@@ -4,7 +4,7 @@ import type * as Monaco from 'monaco-editor/esm/vs/editor/editor.api';
 import appIcon from './assets/images/appicon.png';
 import {marked} from 'marked';
 marked.setOptions({ gfm: true, breaks: false });
-import {ConfirmCloseTab, GetDisplayName, GetPendingFilePath, LoadSettings, LogMessage, OpenFile, OpenFileByPath, OpenNewWindow, PrintHTML, PrintText, QueryAI, ReopenWithEncoding, SaveFile, SaveFileWithEncoding, SaveSettings, SetDirty} from '../wailsjs/go/main/App';
+import {ConfirmCloseTab, GetDisplayName, GetPendingFilePath, LoadSettings, LogMessage, OpenFile, OpenFileByPath, OpenNewWindow, PrintHTML, PrintText, QueryAI, ReopenWithEncoding, SaveFile, SaveFileWithEncoding, SaveSettings, SelectFileForLink, SetDirty} from '../wailsjs/go/main/App';
 import {ClipboardGetText, ClipboardSetText, EventsOn, WindowSetTitle} from '../wailsjs/runtime/runtime';
 import './App.css';
 
@@ -195,7 +195,7 @@ function App() {
     const [showAbout, setShowAbout] = useState(false);
 
     // File warning dialog (binary / too large file)
-    type FileWarningState = { type: 'binary' } | { type: 'tooLarge' };
+    type FileWarningState = { type: 'binary' } | { type: 'tooLarge' } | { type: 'error'; message: string };
     const [fileWarning, setFileWarning] = useState<FileWarningState | null>(null);
 
     // Settings modal
@@ -223,6 +223,11 @@ function App() {
     const [showTableDialog, setShowTableDialog] = useState(false);
     const [tableRows, setTableRows] = useState(3);
     const [tableCols, setTableCols] = useState(3);
+
+    // Link insert dialog
+    const [showLinkDialog, setShowLinkDialog] = useState(false);
+    const [linkText, setLinkText] = useState('');
+    const [linkUrl, setLinkUrl] = useState('');
 
     // Settings tab
     const [settingsTab, setSettingsTab] = useState<'ai' | 'editor'>('ai');
@@ -650,60 +655,102 @@ function App() {
 
      async function handleOpenPath(path: string) {
          try {
-             let result;
+             let result: Record<string, string> | undefined;
              try {
                  result = await OpenFileByPath(path);
              } catch (err: any) {
+                 const errMsg = err instanceof Error ? err.message : String(err);
+                 console.error('[handleOpenPath] Error reading file:', errMsg);
+                 void LogMessage(`[handleOpenPath] Failed to read ${path}: ${errMsg}`);
+                 setFileWarning({ type: 'error', message: `ファイルを開くことができません: ${errMsg}` });
                  return;
              }
             
-             if (!result) {
+             if (!result || typeof result.path !== 'string' || typeof result.content !== 'string') {
+                 console.error('[handleOpenPath] Invalid result:', result);
+                 void LogMessage(`[handleOpenPath] Invalid result returned for ${path}`);
+                 setFileWarning({ type: 'error', message: 'ファイルの読み込みに失敗しました' });
                  return;
              }
-             if (result.isBinary === 'true') {
+             // At this point, result is guaranteed to have path and content as strings
+             const typedResult = result as Record<string, string> & { path: string; content: string };
+             if (typedResult.isBinary === 'true') {
                  setFileWarning({ type: 'binary' });
                  return;
              }
-             if (result.isTooLarge === 'true') {
+             if (typedResult.isTooLarge === 'true') {
                  setFileWarning({ type: 'tooLarge' });
                  return;
              }
+             
+             // Check if file is already open - if so, switch to that tab instead of creating a duplicate
+             const existingTab = tabs.find(t => t.filePath === typedResult.path);
+             if (existingTab) {
+                 console.log('[handleOpenPath] File already open, switching to existing tab:', existingTab.id);
+                 newTabIdRef.current = existingTab.id;
+                 setActiveTabId(existingTab.id);
+                 return;
+             }
             
-             // Always open in new tab
+             // Open in new tab
              const tabId = makeTabId();
-             const displayName = result.path.split('/').pop() || 'File';
+             const displayName = typedResult.path.split('/').pop() || 'File';
             
              // Validate content is a string
-             if (typeof result.content !== 'string') {
+             if (typeof typedResult.content !== 'string') {
+                 console.error('[handleOpenPath] Content is not a string:', typeof typedResult.content);
+                 void LogMessage(`[handleOpenPath] Content type error: ${typeof typedResult.content}`);
+                 setFileWarning({ type: 'error', message: 'ファイルの形式が不正です' });
                  return;
              }
             
              const newTab: TabState = {
                  id: tabId,
-                 filePath: result.path,
+                 filePath: typedResult.path,
                  displayName,
-                 content: result.content,
-                 fileEncoding: result.encoding ?? 'UTF-8',
+                 content: typedResult.content,
+                 fileEncoding: typedResult.encoding ?? 'UTF-8',
                  isDirty: false,
                  cursorLine: 1,
-                 charCount: result.content.length,
-                 sectionCount: result.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length,
+                 charCount: typedResult.content.length,
+                 sectionCount: typedResult.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length,
              };
             
              // Create model
              const M = monacoRef.current;
              if (M) {
                  try {
-                     const model = M.editor.createModel(result.content, 'markdown');
+                     const model = M.editor.createModel(typedResult.content, 'markdown');
                      tabModelsRef.current.set(tabId, model);
                  } catch (modelErr: any) {
+                     const errMsg = modelErr instanceof Error ? modelErr.message : String(modelErr);
+                     console.error('[handleOpenPath] Model creation error:', errMsg);
+                     void LogMessage(`[handleOpenPath] Failed to create editor model: ${errMsg}`);
                      throw modelErr;
                  }
              }
-            
+             
              // Add tab and switch, removing empty Untitled if present
              newTabIdRef.current = tabId;
              setTabs(prev => {
+                 // Double-check for duplicate file paths (race condition protection)
+                 const isDuplicate = prev.some(t => t.filePath === typedResult.path);
+                 if (isDuplicate) {
+                     console.log('[handleOpenPath] Duplicate detected in setTabs callback, not adding tab');
+                     // Clean up the model we just created
+                     const model = tabModelsRef.current.get(tabId);
+                     if (model) {
+                         model.dispose();
+                         tabModelsRef.current.delete(tabId);
+                     }
+                     // Find and switch to existing tab instead
+                     const existingTab = prev.find(t => t.filePath === typedResult.path);
+                     if (existingTab) {
+                         newTabIdRef.current = existingTab.id;
+                     }
+                     return prev;
+                 }
+                  
                  // Remove empty Untitled tab if it exists and no files are open
                  let updatedTabs = prev;
                  if (prev.length === 1) {
@@ -720,10 +767,11 @@ function App() {
                  }
                  return [...updatedTabs, newTab];
              });
-         } catch (err: any) {
-             // Silent fail - handled by state
-         }
-     }
+             setActiveTabId(tabId);
+        } catch (err: any) {
+            // Silent fail - handled by state
+        }
+    }
 
     async function handleReopenWithEncoding(encoding: string) {
         setShowEncodingMenu(false);
@@ -1329,6 +1377,7 @@ function App() {
             EventsOn('menu:printText',         () => handlePrintText()),
             EventsOn('menu:toggleLineNumbers', () => setShowLineNumbers(v => !v)),
             EventsOn('menu:togglePreview',     () => setShowPreview(v => !v)),
+            EventsOn('menu:insertLink',        () => setShowLinkDialog(true)),
             EventsOn('file:open',              (path: string) => handleOpenPath(path)),
             EventsOn('file:drop',              (paths: string[]) => {
                 setIsDragOver(false);
@@ -1409,6 +1458,42 @@ function App() {
             editor.executeEdits('insertTable', [{ range, text: prefix + table + '\n' }]);
         }
         setShowTableDialog(false);
+    }
+
+    function insertLink(text: string, url: string) {
+        const editor = editorRef.current;
+        const M = monacoRef.current;
+        const linkMarkdown = `[${text}](${url})`;
+        if (editor && M) {
+            const sel = editor.getSelection();
+            const pos = sel?.getStartPosition() ?? { lineNumber: 1, column: 1 };
+            const range = sel ?? new M.Range(pos.lineNumber, pos.column, pos.lineNumber, pos.column);
+            editor.executeEdits('insertLink', [{ range, text: linkMarkdown }]);
+        }
+        setShowLinkDialog(false);
+        setLinkText('');
+        setLinkUrl('');
+    }
+
+    async function handleSelectFileForLink() {
+        try {
+            const selectedPath = await SelectFileForLink();
+            if (selectedPath) {
+                const currentFile = tabs.find(t => t.id === activeTabId);
+                let relativePath = selectedPath;
+                
+                if (currentFile && currentFile.filePath) {
+                    const currentDir = currentFile.filePath.substring(0, currentFile.filePath.lastIndexOf('/'));
+                    if (selectedPath.startsWith(currentDir)) {
+                        relativePath = selectedPath.substring(currentDir.length + 1);
+                    }
+                }
+                
+                setLinkUrl(relativePath);
+            }
+        } catch (error) {
+            console.error('Failed to select file:', error);
+        }
     }
 
     const handleEditorMount: OnMount = (editor, monaco) => {
@@ -1612,6 +1697,39 @@ function App() {
                 </div>
             )}
 
+            {/* Link insert dialog */}
+            {showLinkDialog && (
+                <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                    onMouseDown={() => setShowLinkDialog(false)}>
+                    <div style={{ background: 'var(--modal-bg)', color: 'var(--modal-text)', borderRadius: '8px', padding: '24px', width: '340px', boxShadow: '0 8px 32px rgba(0,0,0,0.4)', border: '1px solid var(--modal-border)' }}
+                        onMouseDown={e => e.stopPropagation()}>
+                        <h3 style={{ margin: '0 0 16px', fontSize: '15px', color: 'var(--modal-text)' }}>リンクを挿入</h3>
+                        <div style={{ marginBottom: '12px' }}>
+                            <label style={{ display: 'block', fontSize: '12px', color: 'var(--modal-secondary-text)', marginBottom: '4px' }}>テキスト</label>
+                            <input type="text" placeholder="リンクテキスト" value={linkText}
+                                onChange={e => setLinkText(e.target.value)}
+                                onKeyDown={e => e.key === 'Enter' && insertLink(linkText, linkUrl)}
+                                style={{ width: '100%', padding: '8px', fontSize: '14px', border: '1px solid var(--input-border)', borderRadius: '4px', boxSizing: 'border-box', background: 'var(--input-bg)', color: 'var(--input-text)' }}
+                                autoFocus />
+                        </div>
+                        <div style={{ marginBottom: '20px' }}>
+                            <label style={{ display: 'block', fontSize: '12px', color: 'var(--modal-secondary-text)', marginBottom: '4px' }}>URL / ファイルパス</label>
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                                <input type="text" placeholder="https://example.com または相対パス" value={linkUrl}
+                                    onChange={e => setLinkUrl(e.target.value)}
+                                    onKeyDown={e => e.key === 'Enter' && insertLink(linkText, linkUrl)}
+                                    style={{ flex: 1, padding: '8px', fontSize: '14px', border: '1px solid var(--input-border)', borderRadius: '4px', boxSizing: 'border-box', background: 'var(--input-bg)', color: 'var(--input-text)' }} />
+                                <button onClick={handleSelectFileForLink} style={{ padding: '8px 12px', fontSize: '13px', background: 'var(--input-bg)', color: 'var(--modal-text)', border: '1px solid var(--input-border)', borderRadius: '4px', cursor: 'pointer', whiteSpace: 'nowrap' }}>📁</button>
+                            </div>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                            <button onClick={() => setShowLinkDialog(false)} style={{ background: 'var(--input-bg)', color: 'var(--modal-text)', border: '1px solid var(--input-border)', padding: '5px 14px', borderRadius: '4px', cursor: 'pointer' }}>キャンセル</button>
+                            <button onClick={() => insertLink(linkText, linkUrl)} style={{ background: '#2563eb', color: '#fff', border: 'none', padding: '6px 14px', borderRadius: '4px', cursor: 'pointer' }}>挿入</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* File warning modal (binary / too large file) */}
             {fileWarning && (
                 <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 2100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
@@ -1628,11 +1746,21 @@ function App() {
                                     <button onClick={() => setFileWarning(null)} style={{ background: '#2563eb', color: '#fff', border: 'none', padding: '6px 20px', borderRadius: '4px', cursor: 'pointer', fontSize: '13px' }}>OK</button>
                                 </div>
                             </>
-                        ) : (
+                        ) : fileWarning.type === 'tooLarge' ? (
                             <>
                                 <h3 style={{ margin: '0 0 12px', fontSize: '16px' }}>ファイルが大きすぎます</h3>
                                 <p style={{ margin: '0 0 20px', fontSize: '13px', color: 'var(--modal-secondary-text)', lineHeight: 1.5 }}>
                                     このファイルは100MBを超えているため開けません。<br />このアプリで開けるのは100MBまでです。
+                                </p>
+                                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                                    <button onClick={() => setFileWarning(null)} style={{ background: '#2563eb', color: '#fff', border: 'none', padding: '6px 20px', borderRadius: '4px', cursor: 'pointer', fontSize: '13px' }}>OK</button>
+                                </div>
+                            </>
+                        ) : (
+                            <>
+                                <h3 style={{ margin: '0 0 12px', fontSize: '16px' }}>エラーが発生しました</h3>
+                                <p style={{ margin: '0 0 20px', fontSize: '13px', color: 'var(--modal-secondary-text)', lineHeight: 1.5 }}>
+                                    {fileWarning.type === 'error' ? fileWarning.message : 'ファイルを開くことができません。'}
                                 </p>
                                 <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                                     <button onClick={() => setFileWarning(null)} style={{ background: '#2563eb', color: '#fff', border: 'none', padding: '6px 20px', borderRadius: '4px', cursor: 'pointer', fontSize: '13px' }}>OK</button>

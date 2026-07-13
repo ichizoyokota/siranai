@@ -34,4 +34,6 @@ export function SaveFileWithEncoding(arg1:string,arg2:string,arg3:string):Promis
 
 export function SaveSettings(arg1:main.Settings):Promise<void>;
 
+export function SelectFileForLink():Promise<string>;
+
 export function SetDirty(arg1:boolean):Promise<void>;

@@ -20,13 +20,13 @@
       {
         "ext": "md",
         "name": "Markdown Document",
-        "iconName": "appicon",
+        "iconName": "md-file-icon",
         "role": "Editor"
       },
       {
         "ext": "txt",
         "name": "Plain Text Document",
-        "iconName": "appicon",
+        "iconName": "txt-file-icon",
         "role": "Editor"
       }
     ]

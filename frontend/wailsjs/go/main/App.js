@@ -66,6 +66,10 @@ export function SaveSettings(arg1) {
   return window['go']['main']['App']['SaveSettings'](arg1);
 }
 
+export function SelectFileForLink() {
+  return window['go']['main']['App']['SelectFileForLink']();
+}
+
 export function SetDirty(arg1) {
   return window['go']['main']['App']['SetDirty'](arg1);
 }

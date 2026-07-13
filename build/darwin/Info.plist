@@ -45,6 +45,14 @@
             <string>{{.Role}}</string>
             <key>CFBundleTypeIconFile</key>
             <string>{{.IconName}}</string>
+            {{if eq .Ext "txt"}}
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+              <string>com.apple.plain-text</string>
+            </array>
+            {{end}}
           </dict>
           {{end}}
         </array>
