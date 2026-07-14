@@ -13,6 +13,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -284,11 +285,26 @@ type App struct {
 	pendingFilePath string
 	frontendReady   bool
 	isDirty         bool
+	logFile         *os.File
 }
 
 // SetDirty is called by the frontend to report unsaved-change state.
 func (a *App) SetDirty(dirty bool) {
 	a.isDirty = dirty
+}
+
+// logMessage writes to the log file (for debugging when console is unavailable)
+func (a *App) logMessage(msg string) {
+	if a.logFile == nil {
+		logPath := filepath.Join(os.TempDir(), "siranai_debug.log")
+		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			return
+		}
+		a.logFile = f
+	}
+	fmt.Fprintf(a.logFile, "[%s] %s\n", time.Now().Format("15:04:05.000"), msg)
+	a.logFile.Sync()
 }
 
 // NewApp creates a new App application struct
@@ -300,15 +316,20 @@ func NewApp() *App {
 // so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	a.logMessage("=== App started ===")
 	// pendingFilePath is fetched by the frontend via GetPendingFilePath() on mount
 
 	// Handle file drops from Finder/OS onto the app window.
 	// The frontend decides open-vs-insert based on the Shift key it tracks.
 	runtime.OnFileDrop(ctx, func(x, y int, paths []string) {
+		a.logMessage(fmt.Sprintf("OnFileDrop triggered: x=%d, y=%d, paths=%v", x, y, paths))
 		if len(paths) == 0 {
+			a.logMessage("OnFileDrop: empty paths, returning")
 			return
 		}
+		a.logMessage(fmt.Sprintf("OnFileDrop: emitting file:drop event with paths: %v", paths))
 		runtime.EventsEmit(ctx, "file:drop", paths)
+		a.logMessage("OnFileDrop: event emitted successfully")
 	})
 }
 

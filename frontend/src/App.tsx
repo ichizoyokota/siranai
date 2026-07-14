@@ -252,6 +252,9 @@ function App() {
     const previewRef = useRef<HTMLDivElement>(null);
     const previewUpdateTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const monacoWidgetVisibleRef = useRef(false);
+    const editorDomRef = useRef<HTMLElement | null>(null);
+    const dragoverHandlerRef = useRef<((e: DragEvent) => void) | null>(null);
+    const dropHandlerRef = useRef<((e: DragEvent) => void) | null>(null);
 
     // Step 1: Tab refs
     const tabModelsRef = useRef<Map<string, Monaco.editor.ITextModel>>(new Map());
@@ -375,7 +378,7 @@ function App() {
 
     function switchToTab(tabId: string) {
         setActiveTabId(tabId);
-        // Model switching will happen in useEffect (lines 263-280)
+        // Model switching will happen in useEffect (lines 278-308)
     }
 
     function closeTab(tabId: string) {
@@ -388,8 +391,6 @@ function App() {
         
         const tabToClose = tabs.find(t => t.id === tabId);
         if (!tabToClose) return;
-        
-        console.log(`closeTab: tabId=${tabId}, isDirty=${tabToClose.isDirty}, displayName=${tabToClose.displayName}`);
         
         if (tabToClose.isDirty) {
             const confirmed = window.confirm(`"${tabToClose.displayName || 'Untitled'}" has unsaved changes. Close anyway?`);
@@ -654,31 +655,36 @@ function App() {
     }
 
      async function handleOpenPath(path: string) {
+         void LogMessage(`[handleOpenPath] START: path=${path}`);
          try {
              let result: Record<string, string> | undefined;
              try {
+                 void LogMessage(`[handleOpenPath] Calling OpenFileByPath...`);
                  result = await OpenFileByPath(path);
+                 void LogMessage(`[handleOpenPath] OpenFileByPath returned: ${JSON.stringify(result).substring(0, 100)}...`);
              } catch (err: any) {
                  const errMsg = err instanceof Error ? err.message : String(err);
                  console.error('[handleOpenPath] Error reading file:', errMsg);
-                 void LogMessage(`[handleOpenPath] Failed to read ${path}: ${errMsg}`);
+                 void LogMessage(`[handleOpenPath] FAILED: Error reading file: ${errMsg}`);
                  setFileWarning({ type: 'error', message: `ファイルを開くことができません: ${errMsg}` });
                  return;
              }
             
              if (!result || typeof result.path !== 'string' || typeof result.content !== 'string') {
                  console.error('[handleOpenPath] Invalid result:', result);
-                 void LogMessage(`[handleOpenPath] Invalid result returned for ${path}`);
+                 void LogMessage(`[handleOpenPath] FAILED: Invalid result returned for ${path}`);
                  setFileWarning({ type: 'error', message: 'ファイルの読み込みに失敗しました' });
                  return;
              }
              // At this point, result is guaranteed to have path and content as strings
              const typedResult = result as Record<string, string> & { path: string; content: string };
              if (typedResult.isBinary === 'true') {
+                 void LogMessage(`[handleOpenPath] File is binary`);
                  setFileWarning({ type: 'binary' });
                  return;
              }
              if (typedResult.isTooLarge === 'true') {
+                 void LogMessage(`[handleOpenPath] File is too large`);
                  setFileWarning({ type: 'tooLarge' });
                  return;
              }
@@ -686,7 +692,7 @@ function App() {
              // Check if file is already open - if so, switch to that tab instead of creating a duplicate
              const existingTab = tabs.find(t => t.filePath === typedResult.path);
              if (existingTab) {
-                 console.log('[handleOpenPath] File already open, switching to existing tab:', existingTab.id);
+                 void LogMessage(`[handleOpenPath] File already open, switching to tab: ${existingTab.id}`);
                  newTabIdRef.current = existingTab.id;
                  setActiveTabId(existingTab.id);
                  return;
@@ -747,10 +753,11 @@ function App() {
                      const existingTab = prev.find(t => t.filePath === typedResult.path);
                      if (existingTab) {
                          newTabIdRef.current = existingTab.id;
+                         setActiveTabId(existingTab.id);
                      }
                      return prev;
                  }
-                  
+                   
                  // Remove empty Untitled tab if it exists and no files are open
                  let updatedTabs = prev;
                  if (prev.length === 1) {
@@ -1379,20 +1386,38 @@ function App() {
             EventsOn('menu:togglePreview',     () => setShowPreview(v => !v)),
             EventsOn('menu:insertLink',        () => setShowLinkDialog(true)),
             EventsOn('file:open',              (path: string) => handleOpenPath(path)),
-            EventsOn('file:drop',              (paths: string[]) => {
+            EventsOn('file:drop',              async (paths: string[]) => {
+                void LogMessage(`[file:drop] Event received, paths=${JSON.stringify(paths)}, shift=${shiftPressedRef.current}`);
+                console.log('[file:drop] Event received', { paths, shift: shiftPressedRef.current });
                 setIsDragOver(false);
                 if (!paths || paths.length === 0) {
+                    void LogMessage('[file:drop] Empty paths, returning');
                     return;
                 }
                 try {
-                    if (shiftPressedRef.current) {
-                        insertPathAtCursor(paths[0]);
-                    } else {
-                        void handleOpenPath(paths[0]);
+                    // Guard: ensure we have a valid path
+                    const path = paths[0];
+                    if (!path || typeof path !== 'string') {
+                        void LogMessage(`[file:drop] Invalid path type: ${typeof path}`);
+                        return;
                     }
+                    void LogMessage(`[file:drop] Processing path: ${path}`);
+                      
+                    if (shiftPressedRef.current) {
+                        void LogMessage('[file:drop] Mode: insert path');
+                        insertPathAtCursor(path);
+                    } else {
+                        void LogMessage('[file:drop] Mode: open file');
+                        await handleOpenPath(path);
+                    }
+                    void LogMessage('[file:drop] Completed successfully');
                 } catch (error) {
                     const errMsg = error instanceof Error ? error.message : String(error);
-                    void LogMessage(`[file:drop] Exception: ${errMsg}`);
+                    const stack = error instanceof Error ? error.stack : '';
+                    console.error('[file:drop] Exception:', errMsg, error);
+                    void LogMessage(`[file:drop] Exception: ${errMsg}\n${stack}`);
+                    // Reset drag state on error
+                    setIsDragOver(false);
                 }
             }),
         ];
@@ -1416,19 +1441,24 @@ function App() {
         }
         function onDragOver(e: DragEvent) {
             e.preventDefault();
+            e.stopPropagation();
             if (e.shiftKey !== shiftPressedRef.current) {
                 shiftPressedRef.current = e.shiftKey;
                 setShiftDuringDrag(e.shiftKey);
             }
         }
-        function onDrop(e: DragEvent) { e.preventDefault(); setIsDragOver(false); }
+        function onDrop(e: DragEvent) { 
+            e.preventDefault(); 
+            e.stopPropagation();
+            setIsDragOver(false); 
+        }
 
         document.addEventListener('keydown', onKeyDown);
         document.addEventListener('keyup', onKeyUp);
-        document.addEventListener('dragenter', onDragEnter);
-        document.addEventListener('dragleave', onDragLeave);
-        document.addEventListener('dragover', onDragOver);
-        document.addEventListener('drop', onDrop);
+        document.addEventListener('dragenter', onDragEnter, { capture: false });
+        document.addEventListener('dragleave', onDragLeave, { capture: false });
+        document.addEventListener('dragover', onDragOver, { capture: false });
+        document.addEventListener('drop', onDrop, { capture: false });
 
         return () => {
             offs.forEach(off => off());
@@ -1525,15 +1555,43 @@ function App() {
 
         // Disable Monaco's built-in drag-and-drop to allow Wails file:drop event
         const editorDom = editor.getDomNode();
-        if (editorDom) {
-            editorDom.addEventListener('dragover', (e: DragEvent) => {
+        if (editorDom && editorDom !== editorDomRef.current) {
+            // Remove old listeners if editor DOM changed
+            if (editorDomRef.current && dragoverHandlerRef.current && dropHandlerRef.current) {
+                editorDomRef.current.removeEventListener('dragover', dragoverHandlerRef.current, { capture: true });
+                editorDomRef.current.removeEventListener('drop', dropHandlerRef.current, { capture: true });
+            }
+
+            // Create new handlers (captured in refs to prevent duplicates)
+            const handleDragOver = (e: DragEvent) => {
                 e.preventDefault();
                 e.stopPropagation();
-            });
-            editorDom.addEventListener('drop', (e: DragEvent) => {
+                e.stopImmediatePropagation();
+            };
+            const handleDrop = (e: DragEvent) => {
                 e.preventDefault();
                 e.stopPropagation();
-            });
+                e.stopImmediatePropagation();
+            };
+
+            dragoverHandlerRef.current = handleDragOver;
+            dropHandlerRef.current = handleDrop;
+            editorDomRef.current = editorDom;
+
+            // Add new listeners with capture phase
+            editorDom.addEventListener('dragover', handleDragOver, { capture: true, passive: false });
+            editorDom.addEventListener('drop', handleDrop, { capture: true, passive: false });
+
+            // Return cleanup function
+            return () => {
+                if (editorDom && dragoverHandlerRef.current && dropHandlerRef.current) {
+                    editorDom.removeEventListener('dragover', dragoverHandlerRef.current, { capture: true });
+                    editorDom.removeEventListener('drop', dropHandlerRef.current, { capture: true });
+                }
+                editorDomRef.current = null;
+                dragoverHandlerRef.current = null;
+                dropHandlerRef.current = null;
+            };
         }
 
         // Scroll sync: editor → preview pane
@@ -1550,27 +1608,29 @@ function App() {
 
         // Step 2: Content change - update active tab state (debounced)
         editor.onDidChangeModelContent(() => {
-            setIsDirty(true);
-            setAiHighlight(null);
-            const len = editor.getModel()?.getValueLength() ?? 0;
-            setCharCount(len);
-            
-            // Update active tab's content from editor model
             const tabId = activeTabIdRef.current;
             const model = editor.getModel();
             const content = model?.getValue() ?? '';
+            const len = content.length;
             
-            setTabs(prev => prev.map(t => {
-                if (t.id === tabId) {
-                    return { 
-                        ...t, 
-                        isDirty: true,
-                        content: content,  // Keep tab content in sync with model
-                        charCount: content.length,
-                    };
-                }
-                return t;
-            }));
+            setIsDirty(true);
+            setAiHighlight(null);
+            setCharCount(len);
+            
+            // Update active tab's content from editor model
+            setTabs(prev => {
+                return prev.map(t => {
+                    if (t.id === tabId) {
+                        return { 
+                            ...t, 
+                            isDirty: true,
+                            content: content,
+                            charCount: len,
+                        };
+                    }
+                    return t;
+                });
+            });
             
             schedulePreviewUpdate();
         });
@@ -2022,6 +2082,7 @@ function App() {
                     {/* Editor area */}
                     <div style={{ flex: 1, position: 'relative' }}>
                         <Editor
+                            key={activeTabId}
                             height="100%"
                             language="markdown"
                             defaultValue={markdown}
@@ -2038,6 +2099,7 @@ function App() {
                                 tabSize: 4,
                                 renderWhitespace: 'none',
                                 overviewRulerLanes: 0,
+                                dropIntoEditor: { enabled: false },
                             }}
                         />
                     </div>
