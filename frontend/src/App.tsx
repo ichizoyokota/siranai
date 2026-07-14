@@ -255,6 +255,7 @@ function App() {
     const editorDomRef = useRef<HTMLElement | null>(null);
     const dragoverHandlerRef = useRef<((e: DragEvent) => void) | null>(null);
     const dropHandlerRef = useRef<((e: DragEvent) => void) | null>(null);
+    const contentChangeDisposerRef = useRef<(() => void) | null>(null);
 
     // Step 1: Tab refs
     const tabModelsRef = useRef<Map<string, Monaco.editor.ITextModel>>(new Map());
@@ -306,6 +307,57 @@ function App() {
         setCursorLine(activeTab.cursorLine);
         setIsDirty(activeTab.isDirty);
     }, [activeTabId, tabs]);
+    
+    // Set up content change listener when editor or active tab changes
+    useEffect(() => {
+        const editor = editorRef.current;
+        if (!editor) return;
+        
+        // Clean up old listener
+        if (contentChangeDisposerRef.current) {
+            contentChangeDisposerRef.current();
+            contentChangeDisposerRef.current = null;
+        }
+        
+        // Register new listener
+        const disposer = editor.onDidChangeModelContent(() => {
+            const tabId = activeTabIdRef.current;
+            const model = editor.getModel();
+            const content = model?.getValue() ?? '';
+            const len = content.length;
+            
+            setIsDirty(true);
+            setAiHighlight(null);
+            setCharCount(len);
+            
+            // Update active tab's content from editor model
+            setTabs(prev => {
+                return prev.map(t => {
+                    if (t.id === tabId) {
+                        return { 
+                            ...t, 
+                            isDirty: true,
+                            content: content,
+                            charCount: len,
+                        };
+                    }
+                    return t;
+                });
+            });
+            
+            schedulePreviewUpdate();
+        });
+        
+        contentChangeDisposerRef.current = () => disposer.dispose();
+        
+        return () => {
+            if (contentChangeDisposerRef.current) {
+                contentChangeDisposerRef.current();
+                contentChangeDisposerRef.current = null;
+            }
+        };
+    }, [activeTabId]);
+    
     // Apply color theme CSS variables to document root
     useEffect(() => {
         localStorage.setItem('siranai-theme', colorTheme);
@@ -1606,35 +1658,6 @@ function App() {
         // Cursor line tracking
         editor.onDidChangeCursorPosition(e => setCursorLine(e.position.lineNumber));
 
-        // Step 2: Content change - update active tab state (debounced)
-        editor.onDidChangeModelContent(() => {
-            const tabId = activeTabIdRef.current;
-            const model = editor.getModel();
-            const content = model?.getValue() ?? '';
-            const len = content.length;
-            
-            setIsDirty(true);
-            setAiHighlight(null);
-            setCharCount(len);
-            
-            // Update active tab's content from editor model
-            setTabs(prev => {
-                return prev.map(t => {
-                    if (t.id === tabId) {
-                        return { 
-                            ...t, 
-                            isDirty: true,
-                            content: content,
-                            charCount: len,
-                        };
-                    }
-                    return t;
-                });
-            });
-            
-            schedulePreviewUpdate();
-        });
-
         // AI popup: detect selection start
         editor.onMouseDown(() => { isSelectingRef.current = true; });
 
@@ -2082,7 +2105,6 @@ function App() {
                     {/* Editor area */}
                     <div style={{ flex: 1, position: 'relative' }}>
                         <Editor
-                            key={activeTabId}
                             height="100%"
                             language="markdown"
                             defaultValue={markdown}
