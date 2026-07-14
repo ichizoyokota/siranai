@@ -71,7 +71,7 @@ interface AIProviderConfig {
     enabled: boolean;
 }
 
-const APP_VERSION = '0.1.6';
+const APP_VERSION = '0.1.8';
 
 const PROVIDER_MODELS: Record<string, string[]> = {
     gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite', 'gemini-flash-latest', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'],
@@ -1860,7 +1860,7 @@ function App() {
                     onMouseDown={() => setShowAbout(false)}>
                     <div style={{ background: 'var(--modal-bg)', color: 'var(--modal-text)', borderRadius: '12px', padding: '32px 40px', width: '320px', textAlign: 'center', boxShadow: '0 8px 32px rgba(0,0,0,0.4)', border: '1px solid var(--modal-border)' }}
                         onMouseDown={e => e.stopPropagation()}>
-                        <div style={{ width: '80px', height: '80px', borderRadius: '18px', backgroundImage: `url(${appIcon})`, backgroundSize: 'cover', backgroundPosition: 'center', margin: '0 auto 16px' }} />
+                        <div style={{ width: '80px', height: '80px', borderRadius: '18px', backgroundImage: `url(${appIcon})`, backgroundSize: 'cover', backgroundPosition: 'center', margin: '0 auto 16px', filter: colorTheme !== 'default' ? 'brightness(1.2)' : 'none' }} />
                         <h2 style={{ margin: '0 0 4px', fontSize: '22px' }}>SIRANAI</h2>
                         <p style={{ margin: '0 0 4px', color: 'var(--modal-secondary-text)', fontSize: '13px' }}>Think · Ask · Organize</p>
                         <p style={{ margin: '0 0 20px', color: 'var(--modal-secondary-text)', fontSize: '12px' }}>Version {APP_VERSION}</p>
