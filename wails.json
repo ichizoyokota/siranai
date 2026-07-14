@@ -30,5 +30,10 @@
         "role": "Editor"
       }
     ]
+  },
+  "build": {
+    "darwin": {
+      "universalPath": "build/bin/SIRANAI.app/Contents/MacOS/SIRANAI"
+    }
   }
 }
