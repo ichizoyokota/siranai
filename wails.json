@@ -11,24 +11,10 @@
     "email": "yokota@yeees.in"
   },
   "info": {
-    "productVersion": "0.1.7",
+    "productVersion": "0.1.8",
     "copyright": "© 2026 Yeees.in",
     "comments": "SIRANAI - Think · Ask · Organize",
     "companyName": "Yeees.in",
-    "productName": "SIRANAI",
-    "fileAssociations": [
-      {
-        "ext": "md",
-        "name": "Markdown Document",
-        "iconName": "md-file-icon",
-        "role": "Editor"
-      },
-      {
-        "ext": "txt",
-        "name": "Plain Text Document",
-        "iconName": "txt-file-icon",
-        "role": "Editor"
-      }
-    ]
+    "productName": "SIRANAI"
   }
 }
