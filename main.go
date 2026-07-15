@@ -43,6 +43,7 @@ func main() {
 	fileMenu.AddSeparator()
 	fileMenu.AddText("Open", keys.CmdOrCtrl("o"), func(_ *menu.CallbackData) {
 		runtime.EventsEmit(app.ctx, "menu:open")
+		runtime.EventsEmit(app.ctx, "menu:open")
 	})
 	fileMenu.AddText("Save", keys.CmdOrCtrl("s"), func(_ *menu.CallbackData) {
 		runtime.EventsEmit(app.ctx, "menu:save")
@@ -123,8 +124,7 @@ func main() {
 			WindowIsTranslucent:  false,
 			OnFileOpen: func(filePath string) {
 				if app.frontendReady {
-					// Frontend is loaded and listening — bring to front and emit directly
-					runtime.WindowShow(app.ctx)
+					// Frontend is loaded and listening — emit directly
 					runtime.EventsEmit(app.ctx, "file:open", filePath)
 				} else {
 					// App just launched via file association; frontend not ready yet.

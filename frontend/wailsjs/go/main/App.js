@@ -18,6 +18,10 @@ export function GetPendingFilePath() {
   return window['go']['main']['App']['GetPendingFilePath']();
 }
 
+export function HideWindow() {
+  return window['go']['main']['App']['HideWindow']();
+}
+
 export function LoadSettings() {
   return window['go']['main']['App']['LoadSettings']();
 }
@@ -72,4 +76,8 @@ export function SelectFileForLink() {
 
 export function SetDirty(arg1) {
   return window['go']['main']['App']['SetDirty'](arg1);
+}
+
+export function ShowWindow() {
+  return window['go']['main']['App']['ShowWindow']();
 }

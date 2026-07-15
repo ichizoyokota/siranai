@@ -435,13 +435,6 @@ function App() {
     }
 
     function closeTab(tabId: string) {
-        // Check if this is the last tab
-        if (tabs.length === 1) {
-            // Last tab — create new tab instead
-            handleNew();
-            return;
-        }
-        
         const tabToClose = tabs.find(t => t.id === tabId);
         if (!tabToClose) return;
         
@@ -463,16 +456,28 @@ function App() {
         setTabs(prev => {
             const newTabs = prev.filter(t => t.id !== tabId);
             console.log(`setTabs: removed ${tabId}, remaining tabs: ${newTabs.length}`);
+            void LogMessage(`[closeTab] Removed ${tabId}, remaining tabs: ${newTabs.length}`);
             
-            // If no tabs left, create new one
+            // If no tabs left, create a new empty tab automatically
+            // (This prevents UI crash - Monaco editor and other components expect at least 1 tab)
             if (newTabs.length === 0) {
-                const newTab = makeInitialTab();
+                console.log('Last tab closed, auto-creating new tab');
+                void LogMessage('[closeTab] Last tab closed, auto-creating new tab');
+                const newTab = makeInitialTab([]);
+                
+                // Create model for the new tab
                 const M = monacoRef.current;
                 if (M) {
-                    const model = M.editor.createModel(newTab.content, 'markdown');
-                    tabModelsRef.current.set(newTab.id, model);
+                    try {
+                        const model = M.editor.createModel(newTab.content, 'markdown');
+                        tabModelsRef.current.set(newTab.id, model);
+                    } catch (err) {
+                        console.error('Failed to create model:', err);
+                    }
                 }
-                nextTabId = newTab.id;
+                
+                // Switch to new tab
+                setTimeout(() => setActiveTabId(newTab.id), 0);
                 return [newTab];
             }
             
@@ -510,26 +515,48 @@ function App() {
     function doRedo() { editorRef.current?.trigger('keyboard', 'redo', null); }
 
     function handleNew() {
+        void LogMessage(`[handleNew] Called, tabs.length: ${tabs.length}`);
+        console.log('[handleNew] Called, tabs.length:', tabs.length);
+        
+        void LogMessage('[handleNew] Called');
+        
         // Use functional update to get the latest tabs
         let newTabId = '';
         
         setTabs(prev => {
-            const newTab = makeInitialTab(prev);
-            newTabId = newTab.id;
+                void LogMessage(`[handleNew] setTabs callback, prev.length: ${prev.length}`);
+                console.log('[handleNew] setTabs callback, prev.length:', prev.length);
+                const newTab = makeInitialTab(prev);
+                newTabId = newTab.id;
+                
+                // Create model first (only if Monaco is available)
+                const M = monacoRef.current;
+                if (M) {
+                    try {
+                        const model = M.editor.createModel(newTab.content, 'markdown');
+                        tabModelsRef.current.set(newTab.id, model);
+                        void LogMessage(`[handleNew] Model created for tab: ${newTab.id}`);
+                        console.log('[handleNew] Model created for tab:', newTab.id);
+                    } catch (err) {
+                        const errMsg = err instanceof Error ? err.message : String(err);
+                        void LogMessage(`[handleNew] Failed to create model: ${errMsg}`);
+                        console.error('[handleNew] Failed to create model:', err);
+                    }
+                } else {
+                    void LogMessage('[handleNew] Monaco not available yet');
+                    console.log('[handleNew] Monaco not available yet');
+                }
+                
+                return [...prev, newTab];
+            });
             
-            // Create model first
-            const M = monacoRef.current;
-            if (M) {
-                const model = M.editor.createModel(newTab.content, 'markdown');
-                tabModelsRef.current.set(newTab.id, model);
-            }
-            
-            return [...prev, newTab];
-        });
-        
-        // Switch to the new tab after state is updated
-        // Use setTimeout to ensure state update completes first
-        setTimeout(() => setActiveTabId(newTabId), 0);
+            // Switch to the new tab after state is updated
+            // Use setTimeout to ensure state update completes first
+            setTimeout(() => {
+                void LogMessage(`[handleNew] Switching to tab: ${newTabId}`);
+                console.log('[handleNew] Switching to tab:', newTabId);
+                setActiveTabId(newTabId);
+            }, 0);
     }
 
     function applyFileResult(result: { path: string; content: string; encoding: string }) {
@@ -721,7 +748,8 @@ function App() {
 
      async function handleOpenPath(path: string) {
          void LogMessage(`[handleOpenPath] START: path=${path}`);
-         try {
+         
+         try{
              let result: Record<string, string> | undefined;
              try {
                  void LogMessage(`[handleOpenPath] Calling OpenFileByPath...`);

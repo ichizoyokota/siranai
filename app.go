@@ -286,11 +286,26 @@ type App struct {
 	frontendReady   bool
 	isDirty         bool
 	logFile         *os.File
+	windowHidden    bool
 }
 
 // SetDirty is called by the frontend to report unsaved-change state.
 func (a *App) SetDirty(dirty bool) {
 	a.isDirty = dirty
+}
+
+// HideWindow hides the window and marks it as hidden
+func (a *App) HideWindow() {
+	a.logMessage("HideWindow called")
+	a.windowHidden = true
+	runtime.WindowHide(a.ctx)
+}
+
+// ShowWindow shows the window and marks it as visible
+func (a *App) ShowWindow() {
+	a.logMessage("ShowWindow called")
+	runtime.WindowShow(a.ctx)
+	a.windowHidden = false
 }
 
 // logMessage writes to the log file (for debugging when console is unavailable)

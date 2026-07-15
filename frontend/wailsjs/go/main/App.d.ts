@@ -10,6 +10,8 @@ export function GetDisplayName(arg1:string):Promise<string>;
 
 export function GetPendingFilePath():Promise<string>;
 
+export function HideWindow():Promise<void>;
+
 export function LoadSettings():Promise<main.Settings>;
 
 export function LogMessage(arg1:string):Promise<void>;
@@ -37,3 +39,5 @@ export function SaveSettings(arg1:main.Settings):Promise<void>;
 export function SelectFileForLink():Promise<string>;
 
 export function SetDirty(arg1:boolean):Promise<void>;
+
+export function ShowWindow():Promise<void>;
