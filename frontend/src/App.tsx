@@ -271,19 +271,10 @@ function App() {
     const tabModelsRef = useRef<Map<string, Monaco.editor.ITextModel>>(new Map());
     const activeTabIdRef = useRef<string>(activeTabId);
     const tabDragDataRef = useRef<{ tabId: string } | null>(null);
-    const newTabIdRef = useRef<string | null>(null);
 
     useEffect(() => { filePathRef.current = filePath; }, [filePath]);
     useEffect(() => { void SetDirty(isDirty); }, [isDirty]);
     useEffect(() => { activeTabIdRef.current = activeTabId; }, [activeTabId]);
-    
-    // When a new tab ID is pending, switch to it
-    useEffect(() => {
-        if (newTabIdRef.current) {
-            setActiveTabId(newTabIdRef.current);
-            newTabIdRef.current = null;
-        }
-    }, [tabs]);
     
     // Step 2-3: When active tab changes, switch Monaco model and update state
     useEffect(() => {
@@ -466,6 +457,8 @@ function App() {
             tabModelsRef.current.delete(tabId);
         }
         
+        let nextTabId: string | null = null;
+        
         // Remove from tabs list and switch if needed
         setTabs(prev => {
             const newTabs = prev.filter(t => t.id !== tabId);
@@ -479,7 +472,7 @@ function App() {
                     const model = M.editor.createModel(newTab.content, 'markdown');
                     tabModelsRef.current.set(newTab.id, model);
                 }
-                newTabIdRef.current = newTab.id;
+                nextTabId = newTab.id;
                 return [newTab];
             }
             
@@ -488,12 +481,17 @@ function App() {
                 const nextTab = newTabs[0];
                 console.log(`activeTab was closed, switching to: ${nextTab?.id}`);
                 if (nextTab) {
-                    newTabIdRef.current = nextTab.id;
+                    nextTabId = nextTab.id;
                 }
             }
             
             return newTabs;
         });
+        
+        // Switch to next tab after state update
+        if (nextTabId) {
+            setTimeout(() => setActiveTabId(nextTabId!), 0);
+        }
     }
 
     function schedulePreviewUpdate() {
@@ -518,7 +516,6 @@ function App() {
         setTabs(prev => {
             const newTab = makeInitialTab(prev);
             newTabId = newTab.id;
-            newTabIdRef.current = newTabId;
             
             // Create model first
             const M = monacoRef.current;
@@ -529,6 +526,10 @@ function App() {
             
             return [...prev, newTab];
         });
+        
+        // Switch to the new tab after state is updated
+        // Use setTimeout to ensure state update completes first
+        setTimeout(() => setActiveTabId(newTabId), 0);
     }
 
     function applyFileResult(result: { path: string; content: string; encoding: string }) {
@@ -613,13 +614,12 @@ function App() {
         }
         
         // Add tab and switch, removing empty Untitled if present
-        newTabIdRef.current = tabId;
         setTabs(prev => {
             // Remove empty Untitled tab if it exists and no files are open
             let updatedTabs = prev;
             if (prev.length === 1) {
                 const lastTab = prev[0];
-                if (!lastTab.filePath && (lastTab.displayName === 'Untitled' || lastTab.displayName.match(/^Untitled \d+$/))) {
+                if (!lastTab.filePath && !lastTab.isDirty && (lastTab.displayName === 'Untitled' || lastTab.displayName.match(/^Untitled \d+$/))) {
                     // Remove the empty Untitled tab
                     const model = tabModelsRef.current.get(lastTab.id);
                     if (model) {
@@ -631,6 +631,9 @@ function App() {
             }
             return [...updatedTabs, newTab];
         });
+        
+        // Switch to new tab after state update
+        setTimeout(() => setActiveTabId(tabId), 0);
     }
 
     async function handleSave() {
@@ -755,7 +758,6 @@ function App() {
              const existingTab = tabs.find(t => t.filePath === typedResult.path);
              if (existingTab) {
                  void LogMessage(`[handleOpenPath] File already open, switching to tab: ${existingTab.id}`);
-                 newTabIdRef.current = existingTab.id;
                  setActiveTabId(existingTab.id);
                  return;
              }
@@ -799,12 +801,11 @@ function App() {
              }
              
              // Add tab and switch, removing empty Untitled if present
-             newTabIdRef.current = tabId;
              setTabs(prev => {
                  // Double-check for duplicate file paths (race condition protection)
                  const isDuplicate = prev.some(t => t.filePath === typedResult.path);
                  if (isDuplicate) {
-                     console.log('[handleOpenPath] Duplicate detected in setTabs callback, not adding tab');
+                     void LogMessage('[handleOpenPath] Duplicate detected in setTabs callback, not adding tab');
                      // Clean up the model we just created
                      const model = tabModelsRef.current.get(tabId);
                      if (model) {
@@ -814,7 +815,6 @@ function App() {
                      // Find and switch to existing tab instead
                      const existingTab = prev.find(t => t.filePath === typedResult.path);
                      if (existingTab) {
-                         newTabIdRef.current = existingTab.id;
                          setActiveTabId(existingTab.id);
                      }
                      return prev;
@@ -824,8 +824,9 @@ function App() {
                  let updatedTabs = prev;
                  if (prev.length === 1) {
                      const lastTab = prev[0];
-                     if (!lastTab.filePath && (lastTab.displayName === 'Untitled' || lastTab.displayName.match(/^Untitled \d+$/))) {
+                     if (!lastTab.filePath && !lastTab.isDirty && (lastTab.displayName === 'Untitled' || lastTab.displayName.match(/^Untitled \d+$/))) {
                          // Remove the empty Untitled tab
+                         void LogMessage('[handleOpenPath] Removing empty Untitled tab');
                          const model = tabModelsRef.current.get(lastTab.id);
                          if (model) {
                              model.dispose();
