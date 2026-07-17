@@ -71,7 +71,7 @@ interface AIProviderConfig {
     enabled: boolean;
 }
 
-const APP_VERSION = '0.1.8';
+const APP_VERSION = '0.1.9';
 
 const PROVIDER_MODELS: Record<string, string[]> = {
     gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite', 'gemini-flash-latest', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'],
@@ -265,6 +265,7 @@ function App() {
     const editorDomRef = useRef<HTMLElement | null>(null);
     const dragoverHandlerRef = useRef<((e: DragEvent) => void) | null>(null);
     const dropHandlerRef = useRef<((e: DragEvent) => void) | null>(null);
+    const editorMouseUpHandlerRef = useRef<((e: MouseEvent) => void) | null>(null);
     const contentChangeDisposerRef = useRef<(() => void) | null>(null);
 
     // Step 1: Tab refs
@@ -1006,15 +1007,18 @@ function App() {
     }
 
     async function doPaste() {
-        console.log('[doPaste] Called');
-        
+        void LogMessage('[doPaste] Called');
+         
         const inp = activeInput();
         if (inp) {
-            console.log('[doPaste] Active input detected');
+            void LogMessage('[doPaste] Active input detected');
             // Use Wails API only to avoid permission dialogs
             const text = await ClipboardGetText();
-            console.log('[doPaste] Input got text from Wails:', text.substring(0, 50));
-            if (!text) return;
+            void LogMessage(`[doPaste] Input got text: "${text?.substring(0, 50) || 'EMPTY'}"`);
+            if (!text) {
+                void LogMessage('[doPaste] Clipboard is empty');
+                return;
+            }
             inp.focus();
             // Use value manipulation instead of execCommand to avoid browser prompts
             const start = inp.selectionStart ?? 0;
@@ -1023,24 +1027,37 @@ function App() {
             inp.selectionStart = inp.selectionEnd = start + text.length;
             // Trigger React's onChange
             inp.dispatchEvent(new Event('input', { bubbles: true }));
-            console.log('[doPaste] Input paste completed');
+            void LogMessage('[doPaste] Input paste completed');
             return;
         }
-        
+         
         // For Monaco editor, manually handle paste
         const editor = editorRef.current;
         if (editor) {
-            console.log('[doPaste] Monaco editor detected');
+            void LogMessage('[doPaste] Monaco editor detected');
             // Use Wails API only to avoid permission dialogs
             const text = await ClipboardGetText();
-            console.log('[doPaste] Monaco got text from Wails:', text.substring(0, 50));
+            void LogMessage(`[doPaste] Monaco got text: "${text?.substring(0, 50) || 'EMPTY'}"`);
             if (text) {
                 const selection = editor.getSelection();
                 if (selection) {
-                    editor.executeEdits('paste', [{ range: selection, text }]);
-                    console.log('[doPaste] Monaco paste completed');
+                    // Convert Selection to IRange for executeEdits
+                    const range = {
+                        startLineNumber: selection.startLineNumber,
+                        startColumn: selection.startColumn,
+                        endLineNumber: selection.endLineNumber,
+                        endColumn: selection.endColumn,
+                    };
+                    editor.executeEdits('paste', [{ range, text }]);
+                    void LogMessage('[doPaste] Monaco paste completed');
+                } else {
+                    void LogMessage('[doPaste] No selection in editor');
                 }
+            } else {
+                void LogMessage('[doPaste] Clipboard is empty');
             }
+        } else {
+            void LogMessage('[doPaste] No editor or active input');
         }
     }
 
@@ -1085,7 +1102,14 @@ function App() {
     // Close popup / encoding menu on click outside
     useEffect(() => {
         function onMouseDown(e: MouseEvent) {
-            if (popupRef.current && !popupRef.current.contains(e.target as Node)) {
+            void LogMessage(`[MOUSEDOWN-DEBUG] mousedown event, popup exists=${!!popupRef.current}`);
+            // Only close popup if clicking outside of it AND not inside editor
+            const editor = editorRef.current;
+            const editorDom = editor?.getDomNode();
+            const isClickInEditor = editorDom && editorDom.contains(e.target as Node);
+            
+            if (popupRef.current && !popupRef.current.contains(e.target as Node) && !isClickInEditor) {
+                void LogMessage('[MOUSEDOWN-DEBUG] Closing popup due to outside click');
                 setPopup(null);
                 setAiHighlight(null);
             }
@@ -1216,45 +1240,76 @@ function App() {
     
     useEffect(() => {
         function onDocMouseUp(e: MouseEvent) {
-            if (!isSelectingRef.current) return;
-            isSelectingRef.current = false;
+            void LogMessage(`[POPUP-DEBUG] mouseup event triggered`);
              
+            // Check if mouseup was in AI response area - if so, skip popup
+            const aiResponseArea = aiResponseAreaRef.current;
+            if (aiResponseArea && aiResponseArea.contains(e.target as Node)) {
+                void LogMessage('[POPUP-DEBUG] mouseup in AI response area, skipping popup');
+                setPopup(null);
+                setAiHighlight(null);
+                return;
+            }
+              
             // Wait a bit to see if user is copying
             setTimeout(() => {
                 if (copyingRef.current) {
+                    void LogMessage('[POPUP-DEBUG] copying detected, returning');
                     copyingRef.current = false;
                     return;
                 }
-                 
+                    
                 // Don't show AI popup if Monaco widgets are currently visible (check current state)
-                // Also check the ref-based state as a backup
                 const widgetVisible = isMonacoWidgetVisible();
                 const findWidget = document.querySelector('.find-widget') as HTMLElement | null;
                 const findRect = findWidget?.getBoundingClientRect();
                 const findClasses = findWidget?.className || '';
                 const findAriaHidden = findWidget?.getAttribute('aria-hidden');
+                void LogMessage(`[POPUP-DEBUG] widgetVisible=${widgetVisible}, monacoWidgetVisibleRef=${monacoWidgetVisibleRef.current}`);
                 console.warn('[POPUP] MouseUp: widgetVisible=', widgetVisible, 'classes=', findClasses, 'aria-hidden=', findAriaHidden, 'rect.top=', findRect?.top);
                 if (widgetVisible || monacoWidgetVisibleRef.current) {
+                    void LogMessage('[POPUP-DEBUG] Widget visible, skipping popup');
                     console.warn('[POPUP] Skipping popup due to widget visibility');
                     setPopup(null);
                     setAiHighlight(null);
                     return;
                 }
-                 
+                    
                 const editor = editorRef.current;
-                if (!editor) return;
+                void LogMessage(`[POPUP-DEBUG] editor=${editor ? 'exists' : 'null'}`);
+                if (!editor) {
+                    void LogMessage('[POPUP-DEBUG] editor is null, returning');
+                    return;
+                }
                 const sel = editor.getSelection();
-                if (!sel || sel.isEmpty()) { setPopup(null); setAiHighlight(null); return; }
+                void LogMessage(`[POPUP-DEBUG] selection exists=${!!sel}, isEmpty=${sel?.isEmpty()}`);
+                if (!sel || sel.isEmpty()) { 
+                    void LogMessage('[POPUP-DEBUG] no selection, clearing popup');
+                    setPopup(null); 
+                    setAiHighlight(null); 
+                    return;
+                }
                 const model = editor.getModel();
-                if (!model) return;
+                void LogMessage(`[POPUP-DEBUG] model=${model ? 'exists' : 'null'}`);
+                if (!model) {
+                    void LogMessage('[POPUP-DEBUG] model is null, returning');
+                    return;
+                }
                 const selectedText = model.getValueInRange(sel).trim();
-                if (!selectedText) { setPopup(null); setAiHighlight(null); return; }
+                void LogMessage(`[POPUP-DEBUG] selectedText="${selectedText.substring(0, 50)}..." (length=${selectedText.length})`);
+                if (!selectedText) { 
+                    void LogMessage('[POPUP-DEBUG] no selected text, clearing popup');
+                    setPopup(null); 
+                    setAiHighlight(null); 
+                    return; 
+                }
                 const start = model.getOffsetAt(sel.getStartPosition());
                 const end = model.getOffsetAt(sel.getEndPosition());
                 setAiHighlight({ start, end });
                 const POPUP_W = 290;
                 const x = Math.min(Math.max(e.clientX, 8), window.innerWidth - POPUP_W - 8);
                 const y = Math.max(Math.min(e.clientY - 48, window.innerHeight - 58), 8);
+                void LogMessage(`[POPUP-DEBUG] setting popup at x=${x}, y=${y}`);
                 setPopup({ x, y, text: selectedText });
                 setPopupQuestion('');
             }, 100);
@@ -1305,6 +1360,31 @@ function App() {
         
         // Listen for keyboard events to detect widget open/close
         function onKeyDown(e: KeyboardEvent) {
+            // Cmd+C: Copy (always works, even with popup)
+            if ((e.metaKey || e.ctrlKey) && e.key === 'c') {
+                const editor = editorRef.current;
+                if (editor) {
+                    const sel = editor.getSelection();
+                    if (sel && !sel.isEmpty()) {
+                        const model = editor.getModel();
+                        if (model) {
+                            const selectedText = model.getValueInRange(sel);
+                            void LogMessage(`[Global Cmd+C] Copy from editor, length: ${selectedText.length}`);
+                            doCopy().catch(err => void LogMessage(`[Global Cmd+C] Error: ${err}`));
+                            return;
+                        }
+                    }
+                }
+            }
+            // Cmd+V: Paste
+            if ((e.metaKey || e.ctrlKey) && e.key === 'v') {
+                void LogMessage('[Global Cmd+V] Detected from onKeyDown');
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                doPaste().catch(err => void LogMessage(`[Global Cmd+V] Error: ${err}`));
+                return;
+            }
             // Cmd+F (Mac) or Ctrl+F (Windows/Linux) opens find
             if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
                 setTimeout(() => {
@@ -1316,6 +1396,11 @@ function App() {
                         }
                     }
                 }, 50);
+            }
+            // Ctrl+P: toggle preview and AI search panel visibility (same as Shift+Cmd+P)
+            if ((e.metaKey || e.ctrlKey) && e.key === 'p' && !e.shiftKey) {
+                e.preventDefault();
+                setShowPreview(v => !v);
             }
             // Escape closes widgets - force reset ref and check after delay
             if (e.key === 'Escape') {
@@ -1644,13 +1729,63 @@ function App() {
         });
         monaco.editor.setTheme(toMonacoTheme(colorTheme));
 
+        // Register Markdown-only completion provider
+        const mdKeywords = [
+            // Headers
+            '# ', '## ', '### ', '#### ', '##### ', '###### ',
+            // Formatting
+            '**bold**', '*italic*', '***bold italic***', '~~strikethrough~~', '`code`', '```\ncode block\n```',
+            // Lists
+            '- item', '* item', '+ item', '1. item',
+            // Links and images
+            '[link text](url)', '![alt text](image.url)',
+            // Block quotes
+            '> quote', '>> nested quote',
+            // Horizontal rule
+            '---', '***', '___',
+            // Tables
+            '| Header 1 | Header 2 |\n| -------- | -------- |\n| Cell 1   | Cell 2   |',
+            // Line breaks
+            '  \n', '\\n',
+            // Escapes
+            '\\\\', '\\*', '\\[', '\\]', '\\(', '\\)',
+        ];
+
+        monaco.languages.registerCompletionItemProvider('markdown', {
+            provideCompletionItems: (model, position) => {
+                const word = model.getWordUntilPosition(position);
+                const range = {
+                    startLineNumber: position.lineNumber,
+                    endLineNumber: position.lineNumber,
+                    startColumn: word.startColumn,
+                    endColumn: position.column,
+                };
+
+                return {
+                    suggestions: mdKeywords
+                        .filter(kw => kw.toLowerCase().includes(word.word.toLowerCase()))
+                        .map(kw => ({
+                            label: kw,
+                            kind: monaco.languages.CompletionItemKind.Snippet,
+                            insertText: kw,
+                            range: range,
+                            sortText: '0-' + kw,
+                        })),
+                };
+            },
+            triggerCharacters: ['#', '*', '!', '[', '-', '>', '`', '|'],
+        });
+
         // Disable Monaco's built-in drag-and-drop to allow Wails file:drop event
         const editorDom = editor.getDomNode();
+        void LogMessage(`[EDITOR-MOUNT] editorDom exists: ${!!editorDom}, changed: ${editorDom !== editorDomRef.current}`);
         if (editorDom && editorDom !== editorDomRef.current) {
+            void LogMessage('[EDITOR-MOUNT] Setting up editor DOM listeners');
             // Remove old listeners if editor DOM changed
-            if (editorDomRef.current && dragoverHandlerRef.current && dropHandlerRef.current) {
+            if (editorDomRef.current && dragoverHandlerRef.current && dropHandlerRef.current && editorMouseUpHandlerRef.current) {
                 editorDomRef.current.removeEventListener('dragover', dragoverHandlerRef.current, { capture: true });
                 editorDomRef.current.removeEventListener('drop', dropHandlerRef.current, { capture: true });
+                editorDomRef.current.removeEventListener('mouseup', editorMouseUpHandlerRef.current, { capture: true });
             }
 
             // Create new handlers (captured in refs to prevent duplicates)
@@ -1664,24 +1799,57 @@ function App() {
                 e.stopPropagation();
                 e.stopImmediatePropagation();
             };
+              
+            // Handle mouseup in capture phase to get selection before Monaco processes it
+            const handleEditorMouseUp = (e: MouseEvent) => {
+                void LogMessage('[EDITOR-MOUSEUP-CAPTURE] mouseup in capture phase, checking selection');
+                const editor = editorRef.current;
+                if (!editor) {
+                    void LogMessage('[EDITOR-MOUSEUP-CAPTURE] editor is null');
+                    return;
+                }
+                  
+                const sel = editor.getSelection();
+                void LogMessage(`[EDITOR-MOUSEUP-CAPTURE] selection isEmpty: ${sel?.isEmpty()}`);
+                if (sel && !sel.isEmpty()) {
+                    const model = editor.getModel();
+                    if (model) {
+                        const selectedText = model.getValueInRange(sel).trim();
+                        if (selectedText) {
+                            void LogMessage(`[EDITOR-MOUSEUP-CAPTURE] Selection found: "${selectedText.substring(0, 30)}..."`);
+                            const POPUP_W = 290;
+                            const x = Math.min(Math.max(e.clientX, 8), window.innerWidth - POPUP_W - 8);
+                            const y = Math.max(Math.min(e.clientY - 48, window.innerHeight - 58), 8);
+                            setAiHighlight({ start: model.getOffsetAt(sel.getStartPosition()), end: model.getOffsetAt(sel.getEndPosition()) });
+                            setPopup({ x, y, text: selectedText });
+                            setPopupQuestion('');
+                        }
+                    }
+                }
+            };
 
             dragoverHandlerRef.current = handleDragOver;
             dropHandlerRef.current = handleDrop;
+            editorMouseUpHandlerRef.current = handleEditorMouseUp;
             editorDomRef.current = editorDom;
 
             // Add new listeners with capture phase
             editorDom.addEventListener('dragover', handleDragOver, { capture: true, passive: false });
             editorDom.addEventListener('drop', handleDrop, { capture: true, passive: false });
+            editorDom.addEventListener('mouseup', handleEditorMouseUp, { capture: true, passive: false });
+            void LogMessage('[EDITOR-MOUNT] Editor DOM listeners registered');
 
             // Return cleanup function
             return () => {
-                if (editorDom && dragoverHandlerRef.current && dropHandlerRef.current) {
+                if (editorDom && dragoverHandlerRef.current && dropHandlerRef.current && editorMouseUpHandlerRef.current) {
                     editorDom.removeEventListener('dragover', dragoverHandlerRef.current, { capture: true });
                     editorDom.removeEventListener('drop', dropHandlerRef.current, { capture: true });
+                    editorDom.removeEventListener('mouseup', editorMouseUpHandlerRef.current, { capture: true });
                 }
                 editorDomRef.current = null;
                 dragoverHandlerRef.current = null;
                 dropHandlerRef.current = null;
+                editorMouseUpHandlerRef.current = null;
             };
         }
 
@@ -1697,13 +1865,10 @@ function App() {
         // Cursor line tracking
         editor.onDidChangeCursorPosition(e => setCursorLine(e.position.lineNumber));
 
-        // AI popup: detect selection start
-        editor.onMouseDown(() => { isSelectingRef.current = true; });
-
-        // Cmd+C/V/X → Custom clipboard handlers
+        // Cmd+C/X → Custom clipboard handlers
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyC, () => doCopy());
-        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyV, () => doPaste());
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyX, () => doCut());
+        // Note: Cmd+V is handled by global onKeyDown listener in useEffect
 
         // Tab → 4 spaces
         editor.addCommand(monaco.KeyCode.Tab, () => {
@@ -2161,6 +2326,9 @@ function App() {
                                 renderWhitespace: 'none',
                                 overviewRulerLanes: 0,
                                 dropIntoEditor: { enabled: false },
+                                quickSuggestions: false,
+                                suggestOnTriggerCharacters: false,
+                                acceptSuggestionOnCommitCharacter: false,
                             }}
                         />
                     </div>
@@ -2237,6 +2405,28 @@ function App() {
                     {/* AI response */}
                     {viewMode === 'ai' && (
                         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', userSelect: 'none' }}>
+                            {/* Toolbar */}
+                            <div style={{ display: 'flex', alignItems: 'center', padding: '6px 10px', borderBottom: '1px solid var(--tab-bar-border)', background: 'var(--tab-bar-bg)', gap: '6px' }}>
+                                <button
+                                    onClick={async () => {
+                                        const mdSource = aiResponse || (aiHistory.length > 0 ? aiHistory[0].response : '');
+                                        if (mdSource) {
+                                            void LogMessage(`[AI Toolbar] Copy as Markdown clicked, length: ${mdSource.length}`);
+                                            try {
+                                                await ClipboardSetText(mdSource);
+                                                void LogMessage('[AI Toolbar] Copied full response Markdown with Wails API');
+                                            } catch (err) {
+                                                void LogMessage(`[AI Toolbar] Copy failed: ${err}`);
+                                            }
+                                        }
+                                    }}
+                                    style={{ fontSize: '11px', padding: '4px 8px', border: '1px solid var(--input-border)', borderRadius: '3px', background: 'var(--input-bg)', cursor: 'pointer', color: 'var(--input-text)', whiteSpace: 'nowrap' }}
+                                    title="AI検索結果全体をMarkdownでコピー"
+                                >
+                                    📋 Copy as MD
+                                </button>
+                            </div>
+
                             {/* Response area — text selection enabled (overrides parent userSelect:none) */}
                             <div
                                 ref={aiResponseAreaRef}
@@ -2244,22 +2434,39 @@ function App() {
                                 onKeyDown={async e => {
                                     if ((e.metaKey || e.ctrlKey) && e.key === 'c') {
                                         e.preventDefault();
+                                        e.stopPropagation();
+                                        
+                                        // Get selected text - copy it as-is (without HTML rendering)
                                         const sel = window.getSelection()?.toString();
-                                        console.log('[AI Response] Copy triggered, selected text:', sel?.substring(0, 50));
-                                        if (sel) {
-                                            // Write to BOTH clipboards
+                                        if (sel && sel.length > 0) {
+                                            void LogMessage(`[AI Response] Cmd+C: Copy selected text, length: ${sel.length}`);
                                             try {
                                                 await navigator.clipboard.writeText(sel);
-                                                console.log('[AI Response] Copied with navigator.clipboard');
+                                                void LogMessage('[AI Response] Cmd+C: Copied with navigator.clipboard');
                                             } catch (err) {
-                                                console.log('[AI Response] navigator.clipboard failed:', err);
+                                                void LogMessage(`[AI Response] navigator.clipboard failed: ${err}`);
                                             }
                                             try {
                                                 await ClipboardSetText(sel);
-                                                console.log('[AI Response] Copied with Wails API');
+                                                void LogMessage('[AI Response] Cmd+C: Copied with Wails API');
                                             } catch (err) {
-                                                console.log('[AI Response] Wails API failed:', err);
+                                                void LogMessage(`[AI Response] Wails API failed: ${err}`);
                                             }
+                                        }
+                                    }
+                                }}
+                                onCopy={async e => {
+                                    e.preventDefault();
+                                    
+                                    // Get selected text and copy as-is
+                                    const sel = window.getSelection()?.toString();
+                                    if (sel && sel.length > 0) {
+                                        void LogMessage(`[AI Response] onCopy: Copying selected text, length: ${sel.length}`);
+                                        try {
+                                            await ClipboardSetText(sel);
+                                            void LogMessage('[AI Response] onCopy: Copied with Wails API');
+                                        } catch (err) {
+                                            void LogMessage(`[AI Response] onCopy failed: ${err}`);
                                         }
                                     }
                                 }}
