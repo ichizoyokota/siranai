@@ -5,6 +5,7 @@ export namespace main {
 	    name: string;
 	    apiKey: string;
 	    model: string;
+	    baseUrl: string;
 	    enabled: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -17,6 +18,7 @@ export namespace main {
 	        this.name = source["name"];
 	        this.apiKey = source["apiKey"];
 	        this.model = source["model"];
+	        this.baseUrl = source["baseUrl"];
 	        this.enabled = source["enabled"];
 	    }
 	}

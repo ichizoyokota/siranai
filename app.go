@@ -28,6 +28,7 @@ type AIProvider struct {
 	Name    string `json:"name"`
 	APIKey  string `json:"apiKey"`
 	Model   string `json:"model"`
+	BaseURL string `json:"baseUrl"`
 	Enabled bool   `json:"enabled"`
 }
 
@@ -192,16 +193,19 @@ func queryGemini(apiKey, model, prompt string) (string, error) {
 	return text, nil
 }
 
-func queryOpenAI(apiKey, model, prompt string) (string, error) {
+func queryOpenAI(apiKey, model, prompt, baseURL string) (string, error) {
 	if model == "" {
 		model = "gpt-4o"
+	}
+	if baseURL == "" {
+		baseURL = "https://api.openai.com/v1"
 	}
 	body, _ := json.Marshal(map[string]any{
 		"model":    model,
 		"messages": []map[string]any{{"role": "user", "content": prompt}},
 	})
 	result, err := doPost(
-		"https://api.openai.com/v1/chat/completions",
+		baseURL+"/chat/completions",
 		map[string]string{"Authorization": "Bearer " + apiKey},
 		body,
 	)
@@ -271,7 +275,7 @@ func (a *App) QueryAI(selectedText, question, providerID string) (string, error)
 		case "gemini":
 			return queryGemini(strings.TrimSpace(p.APIKey), p.Model, prompt)
 		case "openai":
-			return queryOpenAI(strings.TrimSpace(p.APIKey), p.Model, prompt)
+			return queryOpenAI(strings.TrimSpace(p.APIKey), p.Model, prompt, strings.TrimSpace(p.BaseURL))
 		case "claude":
 			return queryClaude(strings.TrimSpace(p.APIKey), p.Model, prompt)
 		}

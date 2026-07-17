@@ -68,6 +68,7 @@ interface AIProviderConfig {
     name: string;
     apiKey: string;
     model: string;
+    baseUrl?: string;
     enabled: boolean;
 }
 
@@ -81,7 +82,7 @@ const PROVIDER_MODELS: Record<string, string[]> = {
 
 const DEFAULT_PROVIDERS: AIProviderConfig[] = [
     { id: 'gemini', name: 'Gemini', apiKey: '', model: 'gemini-2.5-flash', enabled: false },
-    { id: 'openai', name: 'ChatGPT (OpenAI)', apiKey: '', model: 'gpt-4o', enabled: false },
+    { id: 'openai', name: 'ChatGPT (OpenAI)', apiKey: '', baseUrl: '', model: 'gpt-4o', enabled: false },
     { id: 'claude', name: 'Claude (Anthropic)', apiKey: '', model: 'claude-sonnet-4-6', enabled: false },
 ];
 
@@ -2354,6 +2355,21 @@ function App() {
                                                     autoComplete="off"
                                                     style={{ width: '100%', padding: '5px 8px', fontSize: '13px', border: '1px solid var(--input-border)', borderRadius: '4px', boxSizing: 'border-box', fontFamily: 'monospace', marginBottom: '8px', background: 'var(--input-bg)', color: 'var(--input-text)' }}
                                                 />
+                                                {p.id === 'openai' && (
+                                                    <>
+                                                        <label style={{ display: 'block', fontSize: '12px', color: 'var(--modal-secondary-text)', marginBottom: '4px' }}>ベース URL (オプション)</label>
+                                                        <input
+                                                            name="baseUrl"
+                                                            data-provider-index={i}
+                                                            type="text"
+                                                            value={p.baseUrl || ''}
+                                                            onChange={e => updateProvider(i, 'baseUrl', e.target.value)}
+                                                            placeholder="例: https://api.openai.com/v1"
+                                                            autoComplete="off"
+                                                            style={{ width: '100%', padding: '5px 8px', fontSize: '13px', border: '1px solid var(--input-border)', borderRadius: '4px', boxSizing: 'border-box', fontFamily: 'monospace', marginBottom: '8px', background: 'var(--input-bg)', color: 'var(--input-text)' }}
+                                                        />
+                                                    </>
+                                                )}
                                                 <label style={{ display: 'block', fontSize: '12px', color: 'var(--modal-secondary-text)', marginBottom: '4px' }}>モデル</label>
                                                 <input
                                                     name="model"
