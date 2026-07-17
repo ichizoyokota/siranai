@@ -269,6 +269,7 @@ function App() {
     const contentChangeDisposerRef = useRef<(() => void) | null>(null);
     const isDisposingRef = useRef<boolean>(false);
     const duplicateExistingTabIdRef = useRef<string | null>(null);
+    const fileOpenQueueRef = useRef<Promise<void>>(Promise.resolve());
 
     // Step 1: Tab refs
     const tabModelsRef = useRef<Map<string, Monaco.editor.ITextModel>>(new Map());
@@ -308,17 +309,20 @@ function App() {
             
             // Switch to this tab's model
             const newModel = tabModelsRef.current.get(activeTab.id);
-            if (newModel) {
+            if (newModel && newModel !== oldModel) {
                 try {
                     editor.setModel(newModel);
+                    // Use setTimeout to ensure setModel completes before focus
+                    setTimeout(() => {
+                        try {
+                            editor.focus();
+                        } catch (focusErr: any) {
+                            console.error('[useEffect:activeTab] focus error:', focusErr);
+                        }
+                    }, 0);
                 } catch (setModelErr: any) {
                     console.error('[useEffect:activeTab] setModel error:', setModelErr);
-                }
-                
-                try {
-                    editor.focus();
-                } catch (focusErr: any) {
-                    console.error('[useEffect:activeTab] focus error:', focusErr);
+                    return;
                 }
             }
             
@@ -537,7 +541,10 @@ function App() {
         });
         // Open file passed at launch via Finder double-click
         GetPendingFilePath().then(path => {
-            if (path) handleOpenPath(path);
+            if (path) {
+                // Queue file operations to prevent parallel execution
+                fileOpenQueueRef.current = fileOpenQueueRef.current.then(() => handleOpenPath(path));
+            }
         });
     }, []);
 
@@ -763,56 +770,58 @@ function App() {
         }
     }
 
-
     async function handleOpen() {
-        const result = await OpenFile();
-        if (!result) return;
-        if (result.isBinary === 'true') { setFileWarning({ type: 'binary' }); return; }
-        if (result.isTooLarge === 'true') { setFileWarning({ type: 'tooLarge' }); return; }
-        
-        // Always open in new tab
-        const tabId = makeTabId();
-        const displayName = result.path.split('/').pop() || 'File';
-        const newTab: TabState = {
-            id: tabId,
-            filePath: result.path,
-            displayName,
-            content: result.content,
-            fileEncoding: result.encoding ?? 'UTF-8',
-            isDirty: false,
-            cursorLine: 1,
-            charCount: result.content.length,
-            sectionCount: result.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length,
-        };
-        
-        // Create model
-        const M = monacoRef.current;
-        if (M) {
-            const model = M.editor.createModel(result.content, 'markdown');
-            tabModelsRef.current.set(tabId, model);
-        }
-        
-        // Add tab and switch, removing empty Untitled if present
-        setTabs(prev => {
-            // Remove empty Untitled tab if it exists and no files are open
-            let updatedTabs = prev;
-            if (prev.length === 1) {
-                const lastTab = prev[0];
-                if (!lastTab.filePath && !lastTab.isDirty && (lastTab.displayName === 'Untitled' || lastTab.displayName.match(/^Untitled \d+$/))) {
-                    // Remove the empty Untitled tab
-                    const model = tabModelsRef.current.get(lastTab.id);
-                    if (model) {
-                        model.dispose();
-                        tabModelsRef.current.delete(lastTab.id);
-                    }
-                    updatedTabs = [];
-                }
+        // Queue file operations to prevent parallel execution
+        fileOpenQueueRef.current = fileOpenQueueRef.current.then(async () => {
+            const result = await OpenFile();
+            if (!result) return;
+            if (result.isBinary === 'true') { setFileWarning({ type: 'binary' }); return; }
+            if (result.isTooLarge === 'true') { setFileWarning({ type: 'tooLarge' }); return; }
+            
+            // Always open in new tab
+            const tabId = makeTabId();
+            const displayName = result.path.split('/').pop() || 'File';
+            const newTab: TabState = {
+                id: tabId,
+                filePath: result.path,
+                displayName,
+                content: result.content,
+                fileEncoding: result.encoding ?? 'UTF-8',
+                isDirty: false,
+                cursorLine: 1,
+                charCount: result.content.length,
+                sectionCount: result.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length,
+            };
+            
+            // Create model
+            const M = monacoRef.current;
+            if (M) {
+                const model = M.editor.createModel(result.content, 'markdown');
+                tabModelsRef.current.set(tabId, model);
             }
-            return [...updatedTabs, newTab];
+            
+            // Add tab and switch, removing empty Untitled if present
+            setTabs(prev => {
+                // Remove empty Untitled tab if it exists and no files are open
+                let updatedTabs = prev;
+                if (prev.length === 1) {
+                    const lastTab = prev[0];
+                    if (!lastTab.filePath && !lastTab.isDirty && (lastTab.displayName === 'Untitled' || lastTab.displayName.match(/^Untitled \d+$/))) {
+                        // Remove the empty Untitled tab
+                        const model = tabModelsRef.current.get(lastTab.id);
+                        if (model) {
+                            model.dispose();
+                            tabModelsRef.current.delete(lastTab.id);
+                        }
+                        updatedTabs = [];
+                    }
+                }
+                return [...updatedTabs, newTab];
+            });
+            
+            // Switch to new tab after state update
+            setTimeout(() => setActiveTabId(tabId), 0);
         });
-        
-        // Switch to new tab after state update
-        setTimeout(() => setActiveTabId(tabId), 0);
     }
 
     async function handleSave() {
@@ -933,16 +942,8 @@ function App() {
                  setFileWarning({ type: 'tooLarge' });
                  return;
              }
-            
-             // Check if file is already open - if so, switch to that tab instead of creating a duplicate
-             const existingTab = tabs.find(t => t.filePath === typedResult.path);
-             if (existingTab) {
-                 void LogMessage(`[handleOpenPath] File already open, switching to existing tab: ${existingTab.id}`);
-                 setActiveTabId(existingTab.id);
-                 return;
-             }
-           
-             // Open in new tab
+             
+             // Open in new tab (duplicate check will happen in setTabs callback)
              const tabId = makeTabId();
              const displayName = typedResult.path.split('/').pop() || 'File';
            
@@ -965,20 +966,6 @@ function App() {
                  charCount: typedResult.content.length,
                  sectionCount: typedResult.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length,
              };
-           
-             // Create model
-             const M = monacoRef.current;
-             if (M) {
-                 try {
-                     const model = M.editor.createModel(typedResult.content, 'markdown');
-                     tabModelsRef.current.set(tabId, model);
-                 } catch (modelErr: any) {
-                     const errMsg = modelErr instanceof Error ? modelErr.message : String(modelErr);
-                     console.error('[handleOpenPath] Model creation error:', errMsg);
-                     void LogMessage(`[handleOpenPath] Failed to create editor model: ${errMsg}`);
-                     throw modelErr;
-                 }
-             }
             
              // Add tab and switch, removing empty Untitled if present
              setTabs(prev => {
@@ -995,13 +982,23 @@ function App() {
                              duplicateExistingTabIdRef.current = existingTab.id;
                              void LogMessage(`[handleOpenPath.setTabs] Stored existing tab ID: ${existingTab.id}`);
                          }
-                         // Clean up the model we just created
-                         const model = tabModelsRef.current.get(tabId);
-                         if (model) {
-                             model.dispose();
-                             tabModelsRef.current.delete(tabId);
-                         }
+                         // No model to clean up since we haven't created it yet
                          return prev;
+                     }
+                      
+                     // Create model AFTER duplicate check
+                     const M = monacoRef.current;
+                     if (M) {
+                         try {
+                             const model = M.editor.createModel(typedResult.content, 'markdown');
+                             tabModelsRef.current.set(tabId, model);
+                             void LogMessage(`[handleOpenPath.setTabs] Model created for ${tabId}`);
+                         } catch (modelErr: any) {
+                             const errMsg = modelErr instanceof Error ? modelErr.message : String(modelErr);
+                             console.error('[handleOpenPath] Model creation error:', errMsg);
+                             void LogMessage(`[handleOpenPath] Failed to create editor model: ${errMsg}`);
+                             return prev; // Don't add tab if model creation fails
+                         }
                      }
                       
                      // Remove empty Untitled tab if it exists and no files are open
@@ -1741,7 +1738,10 @@ function App() {
             EventsOn('menu:toggleLineNumbers', () => setShowLineNumbers(v => !v)),
             EventsOn('menu:togglePreview',     () => setShowPreview(v => !v)),
             EventsOn('menu:insertLink',        () => setShowLinkDialog(true)),
-            EventsOn('file:open',              (path: string) => handleOpenPath(path)),
+            EventsOn('file:open',              (path: string) => {
+                // Queue file operations to prevent parallel execution
+                fileOpenQueueRef.current = fileOpenQueueRef.current.then(() => handleOpenPath(path));
+            }),
             EventsOn('file:drop',              async (paths: string[]) => {
                 void LogMessage(`[file:drop] Event received, paths=${JSON.stringify(paths)}, shift=${shiftPressedRef.current}`);
                 console.log('[file:drop] Event received', { paths, shift: shiftPressedRef.current });
@@ -1750,31 +1750,35 @@ function App() {
                     void LogMessage('[file:drop] Empty paths, returning');
                     return;
                 }
-                try {
-                    // Guard: ensure we have a valid path
-                    const path = paths[0];
-                    if (!path || typeof path !== 'string') {
-                        void LogMessage(`[file:drop] Invalid path type: ${typeof path}`);
-                        return;
+                
+                // Queue file operations to prevent parallel execution and race conditions
+                fileOpenQueueRef.current = fileOpenQueueRef.current.then(async () => {
+                    try {
+                        // Guard: ensure we have a valid path
+                        const path = paths[0];
+                        if (!path || typeof path !== 'string') {
+                            void LogMessage(`[file:drop] Invalid path type: ${typeof path}`);
+                            return;
+                        }
+                        void LogMessage(`[file:drop] Processing path: ${path}`);
+                          
+                        if (shiftPressedRef.current) {
+                            void LogMessage('[file:drop] Mode: insert path');
+                            insertPathAtCursor(path);
+                        } else {
+                            void LogMessage('[file:drop] Mode: open file');
+                            await handleOpenPath(path);
+                        }
+                        void LogMessage('[file:drop] Completed successfully');
+                    } catch (error) {
+                        const errMsg = error instanceof Error ? error.message : String(error);
+                        const stack = error instanceof Error ? error.stack : '';
+                        console.error('[file:drop] Exception:', errMsg, error);
+                        void LogMessage(`[file:drop] Exception: ${errMsg}\n${stack}`);
+                        // Reset drag state on error
+                        setIsDragOver(false);
                     }
-                    void LogMessage(`[file:drop] Processing path: ${path}`);
-                      
-                    if (shiftPressedRef.current) {
-                        void LogMessage('[file:drop] Mode: insert path');
-                        insertPathAtCursor(path);
-                    } else {
-                        void LogMessage('[file:drop] Mode: open file');
-                        await handleOpenPath(path);
-                    }
-                    void LogMessage('[file:drop] Completed successfully');
-                } catch (error) {
-                    const errMsg = error instanceof Error ? error.message : String(error);
-                    const stack = error instanceof Error ? error.stack : '';
-                    console.error('[file:drop] Exception:', errMsg, error);
-                    void LogMessage(`[file:drop] Exception: ${errMsg}\n${stack}`);
-                    // Reset drag state on error
-                    setIsDragOver(false);
-                }
+                });
             }),
         ];
 
