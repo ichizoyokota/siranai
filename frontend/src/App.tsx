@@ -267,6 +267,8 @@ function App() {
     const dropHandlerRef = useRef<((e: DragEvent) => void) | null>(null);
     const editorMouseUpHandlerRef = useRef<((e: MouseEvent) => void) | null>(null);
     const contentChangeDisposerRef = useRef<(() => void) | null>(null);
+    const isDisposingRef = useRef<boolean>(false);
+    const duplicateExistingTabIdRef = useRef<string | null>(null);
 
     // Step 1: Tab refs
     const tabModelsRef = useRef<Map<string, Monaco.editor.ITextModel>>(new Map());
@@ -279,85 +281,212 @@ function App() {
     
     // Step 2-3: When active tab changes, switch Monaco model and update state
     useEffect(() => {
-        const editor = editorRef.current;
-        const M = monacoRef.current;
-        const activeTab = tabs.find(t => t.id === activeTabId);
-        
-        if (!activeTab || !editor || !M) return;
-        
-        // Ensure model exists
-        if (!tabModelsRef.current.has(activeTab.id)) {
-            const model = M.editor.createModel(activeTab.content, 'markdown');
-            tabModelsRef.current.set(activeTab.id, model);
+        try {
+            const editor = editorRef.current;
+            const M = monacoRef.current;
+            const activeTab = tabs.find(t => t.id === activeTabId);
+            
+            if (!activeTab || !editor || !M) return;
+            
+            void LogMessage(`[useEffect:activeTab] Switching to tab ${activeTab.id}, charCount=${activeTab.charCount}`);
+            
+            // Get the current model being displayed before switching
+            const oldModel = editor.getModel();
+            
+            // Ensure model exists
+            if (!tabModelsRef.current.has(activeTab.id)) {
+                try {
+                    const model = M.editor.createModel(activeTab.content, 'markdown');
+                    tabModelsRef.current.set(activeTab.id, model);
+                    void LogMessage(`[useEffect:activeTab] Created new model for ${activeTab.id}`);
+                } catch (createErr: any) {
+                    console.error('[useEffect:activeTab] Error creating model:', createErr);
+                    void LogMessage(`[useEffect:activeTab] Error creating model: ${createErr instanceof Error ? createErr.message : String(createErr)}`);
+                    return;
+                }
+            }
+            
+            // Switch to this tab's model
+            const newModel = tabModelsRef.current.get(activeTab.id);
+            if (newModel) {
+                try {
+                    editor.setModel(newModel);
+                } catch (setModelErr: any) {
+                    console.error('[useEffect:activeTab] setModel error:', setModelErr);
+                }
+                
+                try {
+                    editor.focus();
+                } catch (focusErr: any) {
+                    console.error('[useEffect:activeTab] focus error:', focusErr);
+                }
+            }
+            
+            // Update state variables for display - do this with error handling for each state update
+            try {
+                setFilePath(activeTab.filePath);
+            } catch (e: any) {
+                console.error('[useEffect:activeTab] setFilePath error:', e);
+            }
+            try {
+                setFileEncoding(activeTab.fileEncoding);
+            } catch (e: any) {
+                console.error('[useEffect:activeTab] setFileEncoding error:', e);
+            }
+            try {
+                const mdContent = activeTab.content.length > PREVIEW_CHAR_LIMIT
+                    ? activeTab.content.substring(0, PREVIEW_CHAR_LIMIT)
+                    : activeTab.content;
+                setMarkdown(mdContent);
+            } catch (e: any) {
+                console.error('[useEffect:activeTab] setMarkdown error:', e);
+            }
+            try {
+                setCharCount(activeTab.charCount);
+            } catch (e: any) {
+                console.error('[useEffect:activeTab] setCharCount error:', e);
+            }
+            try {
+                setSectionCount(activeTab.sectionCount);
+            } catch (e: any) {
+                console.error('[useEffect:activeTab] setSectionCount error:', e);
+            }
+            try {
+                setCursorLine(activeTab.cursorLine);
+            } catch (e: any) {
+                console.error('[useEffect:activeTab] setCursorLine error:', e);
+            }
+            try {
+                setIsDirty(activeTab.isDirty);
+            } catch (e: any) {
+                console.error('[useEffect:activeTab] setIsDirty error:', e);
+            }
+        } catch (err: any) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            console.error(`[useEffect:activeTab] Outer catch error:`, errMsg, err);
         }
-        
-        // Switch to this tab's model
-        const model = tabModelsRef.current.get(activeTab.id);
-        if (model) {
-            editor.setModel(model);
-            editor.focus();
-        }
-        
-        // Update state variables for display
-        setFilePath(activeTab.filePath);
-        setFileEncoding(activeTab.fileEncoding);
-        setMarkdown(activeTab.content.length > PREVIEW_CHAR_LIMIT
-            ? activeTab.content.substring(0, PREVIEW_CHAR_LIMIT)
-            : activeTab.content);
-        setCharCount(activeTab.charCount);
-        setSectionCount(activeTab.sectionCount);
-        setCursorLine(activeTab.cursorLine);
-        setIsDirty(activeTab.isDirty);
     }, [activeTabId, tabs]);
     
     // Set up content change listener when editor or active tab changes
     useEffect(() => {
-        const editor = editorRef.current;
-        if (!editor) return;
-        
-        // Clean up old listener
-        if (contentChangeDisposerRef.current) {
-            contentChangeDisposerRef.current();
-            contentChangeDisposerRef.current = null;
-        }
-        
-        // Register new listener
-        const disposer = editor.onDidChangeModelContent(() => {
-            const tabId = activeTabIdRef.current;
-            const model = editor.getModel();
-            const content = model?.getValue() ?? '';
-            const len = content.length;
+        try {
+            const editor = editorRef.current;
+            if (!editor) {
+                return;
+            }
             
-            setIsDirty(true);
-            setAiHighlight(null);
-            setCharCount(len);
+            // Clean up old listener first (synchronously)
+            if (contentChangeDisposerRef.current && !isDisposingRef.current) {
+                try {
+                    isDisposingRef.current = true;
+                    contentChangeDisposerRef.current();
+                    contentChangeDisposerRef.current = null;
+                } catch (disposeErr: any) {
+                    console.error('[useEffect:contentChange] Error disposing old listener:', disposeErr);
+                    contentChangeDisposerRef.current = null;
+                } finally {
+                    isDisposingRef.current = false;
+                }
+            }
             
-            // Update active tab's content from editor model
-            setTabs(prev => {
-                return prev.map(t => {
-                    if (t.id === tabId) {
-                        return { 
-                            ...t, 
-                            isDirty: true,
-                            content: content,
-                            charCount: len,
-                        };
+            // Register new listener - defer to microtask to ensure old listener is fully cleaned up
+            // This prevents race conditions when multiple tabs switch rapidly
+            const microtaskHandle = Promise.resolve().then(() => {
+                try {
+                    const editor = editorRef.current;
+                    if (!editor) {
+                        return;
                     }
-                    return t;
+                    
+                    // Verify editor state before registering
+                    const currentModel = editor.getModel();
+                    
+                    const disposer = editor.onDidChangeModelContent(() => {
+                
+                    try {
+                        // Safeguard: verify we're still on the same tab
+                        const tabId = activeTabIdRef.current;
+                        const currentModel = editor.getModel();
+                        const expectedModel = tabModelsRef.current.get(tabId);
+                        
+                        if (!currentModel || currentModel !== expectedModel) {
+                            return;
+                        }
+                        
+                        const content = currentModel.getValue();
+                        const len = content.length;
+                        
+                        setIsDirty(true);
+                        setAiHighlight(null);
+                        setCharCount(len);
+                        
+                        // Update active tab's content from editor model
+                        setTabs(prev => {
+                            try {
+                                return prev.map(t => {
+                                    if (t.id === tabId) {
+                                        return { 
+                                            ...t, 
+                                            isDirty: true,
+                                            content: content,
+                                            charCount: len,
+                                        };
+                                    }
+                                    return t;
+                                });
+                            } catch (mapErr: any) {
+                                console.error('[onDidChangeModelContent.setTabs] Error:', mapErr);
+                                return prev;
+                            }
+                        });
+                        
+                        schedulePreviewUpdate();
+                    } catch (changeErr: any) {
+                        console.error('[onDidChangeModelContent] Error:', changeErr);
+                    }
                 });
+                
+                // Store the disposer with double-dispose protection
+                let disposed = false;
+                contentChangeDisposerRef.current = () => {
+                    if (disposed) {
+                        return;
+                    }
+                    disposed = true;
+                    try {
+                        disposer.dispose();
+                    } catch (disposeInnerErr: any) {
+                        console.error('[useEffect:contentChange] Error in disposer function:', disposeInnerErr);
+                    }
+                };
+                
+                } catch (registerErr: any) {
+                    console.error('[useEffect:contentChange] Error registering listener:', registerErr);
+                }
+            }).catch((promiseErr: any) => {
+                console.error('[useEffect:contentChange] Microtask error:', promiseErr);
             });
             
-            schedulePreviewUpdate();
-        });
-        
-        contentChangeDisposerRef.current = () => disposer.dispose();
-        
-        return () => {
-            if (contentChangeDisposerRef.current) {
-                contentChangeDisposerRef.current();
-                contentChangeDisposerRef.current = null;
-            }
-        };
+            // Return cleanup function - runs when effect re-runs or component unmounts
+            return () => {
+                try {
+                    // Cancel the pending microtask if effect is re-run before it completes
+                    // (This is handled by React's dependency tracking, but ensure cleanup is called)
+                    if (contentChangeDisposerRef.current && !isDisposingRef.current) {
+                        isDisposingRef.current = true;
+                        contentChangeDisposerRef.current();
+                        contentChangeDisposerRef.current = null;
+                    }
+                } catch (cleanupErr: any) {
+                    console.error('[useEffect:contentChange] Cleanup error:', cleanupErr);
+                    contentChangeDisposerRef.current = null;
+                } finally {
+                    isDisposingRef.current = false;
+                }
+            };
+        } catch (err: any) {
+            console.error('[useEffect:contentChange] Outer error:', err);
+        }
     }, [activeTabId]);
     
     // Apply color theme CSS variables to document root
@@ -501,15 +630,37 @@ function App() {
     }
 
     function schedulePreviewUpdate() {
-        if (previewUpdateTimer.current) clearTimeout(previewUpdateTimer.current);
-        previewUpdateTimer.current = setTimeout(() => {
-            const editor = editorRef.current;
-            if (!editor) return;
-            const val = editor.getValue();
-            setMarkdown(val.length > PREVIEW_CHAR_LIMIT ? val.substring(0, PREVIEW_CHAR_LIMIT) : val);
-            const lines = editor.getModel()?.getLinesContent() ?? [];
-            setSectionCount(lines.filter(l => /^#{1,6}\s/.test(l)).length);
-        }, 300);
+        try {
+            if (previewUpdateTimer.current) clearTimeout(previewUpdateTimer.current);
+            previewUpdateTimer.current = setTimeout(() => {
+                try {
+                    const editor = editorRef.current;
+                    if (!editor) return;
+                    const val = editor.getValue();
+                    const mdContent = val.length > PREVIEW_CHAR_LIMIT ? val.substring(0, PREVIEW_CHAR_LIMIT) : val;
+                    try {
+                        setMarkdown(mdContent);
+                    } catch (mdErr: any) {
+                        console.error('[schedulePreviewUpdate] setMarkdown error:', mdErr);
+                        void LogMessage(`[schedulePreviewUpdate] setMarkdown error: ${mdErr instanceof Error ? mdErr.message : String(mdErr)}`);
+                    }
+                    try {
+                        const lines = editor.getModel()?.getLinesContent() ?? [];
+                        const sectionCount = lines.filter(l => /^#{1,6}\s/.test(l)).length;
+                        setSectionCount(sectionCount);
+                    } catch (secErr: any) {
+                        console.error('[schedulePreviewUpdate] setSectionCount error:', secErr);
+                        void LogMessage(`[schedulePreviewUpdate] setSectionCount error: ${secErr instanceof Error ? secErr.message : String(secErr)}`);
+                    }
+                } catch (timerErr: any) {
+                    console.error('[schedulePreviewUpdate] Timer callback error:', timerErr);
+                    void LogMessage(`[schedulePreviewUpdate] Timer callback error: ${timerErr instanceof Error ? timerErr.message : String(timerErr)}`);
+                }
+            }, 300);
+        } catch (err: any) {
+            console.error('[schedulePreviewUpdate] Error:', err);
+            void LogMessage(`[schedulePreviewUpdate] Error: ${err instanceof Error ? err.message : String(err)}`);
+        }
     }
 
     function doUndo() { editorRef.current?.trigger('keyboard', 'undo', null); }
@@ -747,9 +898,9 @@ function App() {
         }
     }
 
-     async function handleOpenPath(path: string) {
+      async function handleOpenPath(path: string) {
          void LogMessage(`[handleOpenPath] START: path=${path}`);
-         
+        
          try{
              let result: Record<string, string> | undefined;
              try {
@@ -763,7 +914,7 @@ function App() {
                  setFileWarning({ type: 'error', message: `ファイルを開くことができません: ${errMsg}` });
                  return;
              }
-            
+           
              if (!result || typeof result.path !== 'string' || typeof result.content !== 'string') {
                  console.error('[handleOpenPath] Invalid result:', result);
                  void LogMessage(`[handleOpenPath] FAILED: Invalid result returned for ${path}`);
@@ -782,19 +933,19 @@ function App() {
                  setFileWarning({ type: 'tooLarge' });
                  return;
              }
-             
+            
              // Check if file is already open - if so, switch to that tab instead of creating a duplicate
              const existingTab = tabs.find(t => t.filePath === typedResult.path);
              if (existingTab) {
-                 void LogMessage(`[handleOpenPath] File already open, switching to tab: ${existingTab.id}`);
+                 void LogMessage(`[handleOpenPath] File already open, switching to existing tab: ${existingTab.id}`);
                  setActiveTabId(existingTab.id);
                  return;
              }
-            
+           
              // Open in new tab
              const tabId = makeTabId();
              const displayName = typedResult.path.split('/').pop() || 'File';
-            
+           
              // Validate content is a string
              if (typeof typedResult.content !== 'string') {
                  console.error('[handleOpenPath] Content is not a string:', typeof typedResult.content);
@@ -802,7 +953,7 @@ function App() {
                  setFileWarning({ type: 'error', message: 'ファイルの形式が不正です' });
                  return;
              }
-            
+           
              const newTab: TabState = {
                  id: tabId,
                  filePath: typedResult.path,
@@ -814,7 +965,7 @@ function App() {
                  charCount: typedResult.content.length,
                  sectionCount: typedResult.content.split('\n').filter(l => /^#{1,6}\s/.test(l)).length,
              };
-            
+           
              // Create model
              const M = monacoRef.current;
              if (M) {
@@ -828,45 +979,74 @@ function App() {
                      throw modelErr;
                  }
              }
-             
+            
              // Add tab and switch, removing empty Untitled if present
              setTabs(prev => {
-                 // Double-check for duplicate file paths (race condition protection)
-                 const isDuplicate = prev.some(t => t.filePath === typedResult.path);
-                 if (isDuplicate) {
-                     void LogMessage('[handleOpenPath] Duplicate detected in setTabs callback, not adding tab');
-                     // Clean up the model we just created
-                     const model = tabModelsRef.current.get(tabId);
-                     if (model) {
-                         model.dispose();
-                         tabModelsRef.current.delete(tabId);
-                     }
-                     // Find and switch to existing tab instead
-                     const existingTab = prev.find(t => t.filePath === typedResult.path);
-                     if (existingTab) {
-                         setActiveTabId(existingTab.id);
-                     }
-                     return prev;
-                 }
-                   
-                 // Remove empty Untitled tab if it exists and no files are open
-                 let updatedTabs = prev;
-                 if (prev.length === 1) {
-                     const lastTab = prev[0];
-                     if (!lastTab.filePath && !lastTab.isDirty && (lastTab.displayName === 'Untitled' || lastTab.displayName.match(/^Untitled \d+$/))) {
-                         // Remove the empty Untitled tab
-                         void LogMessage('[handleOpenPath] Removing empty Untitled tab');
-                         const model = tabModelsRef.current.get(lastTab.id);
+                 try {
+                     void LogMessage(`[handleOpenPath.setTabs] Starting with ${prev.length} previous tabs`);
+                    
+                     // Double-check for duplicate file paths (race condition protection)
+                     const isDuplicate = prev.some(t => t.filePath === typedResult.path);
+                     if (isDuplicate) {
+                         void LogMessage(`[handleOpenPath.setTabs] Duplicate detected during setTabs callback, not adding tab`);
+                         // Find the existing tab and store its ID
+                         const existingTab = prev.find(t => t.filePath === typedResult.path);
+                         if (existingTab) {
+                             duplicateExistingTabIdRef.current = existingTab.id;
+                             void LogMessage(`[handleOpenPath.setTabs] Stored existing tab ID: ${existingTab.id}`);
+                         }
+                         // Clean up the model we just created
+                         const model = tabModelsRef.current.get(tabId);
                          if (model) {
                              model.dispose();
-                             tabModelsRef.current.delete(lastTab.id);
+                             tabModelsRef.current.delete(tabId);
                          }
-                         updatedTabs = [];
+                         return prev;
                      }
+                      
+                     // Remove empty Untitled tab if it exists and no files are open
+                     let updatedTabs = prev;
+                     if (prev.length === 1) {
+                         const lastTab = prev[0];
+                         if (!lastTab.filePath && !lastTab.isDirty && (lastTab.displayName === 'Untitled' || lastTab.displayName.match(/^Untitled \d+$/))) {
+                             // Remove the empty Untitled tab
+                             void LogMessage('[handleOpenPath.setTabs] Removing empty Untitled tab');
+                             const model = tabModelsRef.current.get(lastTab.id);
+                             if (model) {
+                                 model.dispose();
+                                 tabModelsRef.current.delete(lastTab.id);
+                             }
+                             updatedTabs = [];
+                         }
+                     }
+                     
+                     const result = [...updatedTabs, newTab];
+                     void LogMessage(`[handleOpenPath.setTabs] Returning ${result.length} tabs`);
+                     return result;
+                 } catch (setTabsErr: any) {
+                     const errMsg = setTabsErr instanceof Error ? setTabsErr.message : String(setTabsErr);
+                     console.error('[handleOpenPath.setTabs] Error:', errMsg, setTabsErr);
+                     void LogMessage(`[handleOpenPath.setTabs] Error: ${errMsg}`);
+                     return prev;
                  }
-                 return [...updatedTabs, newTab];
              });
-             setActiveTabId(tabId);
+            
+             void LogMessage('[handleOpenPath] Called setTabs, about to setActiveTabId');
+            
+            // If a duplicate was detected, activate the existing tab instead
+             // Use setTimeout to ensure setTabs state update completes before setActiveTabId
+             setTimeout(() => {
+                 if (duplicateExistingTabIdRef.current) {
+                     const existingTabId = duplicateExistingTabIdRef.current;
+                     duplicateExistingTabIdRef.current = null;
+                     void LogMessage(`[handleOpenPath] Duplicate detected, activating existing tab: ${existingTabId}`);
+                     setActiveTabId(existingTabId);
+                 } else {
+                     // New tab was added, activate it
+                     setActiveTabId(tabId);
+                     void LogMessage(`[handleOpenPath] Set active tab to ${tabId}`);
+                 }
+             }, 0);
         } catch (err: any) {
             // Silent fail - handled by state
         }
