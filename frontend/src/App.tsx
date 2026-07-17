@@ -2276,15 +2276,6 @@ function App() {
                                 e.preventDefault();
                                 const txt = inp.value.substring(inp.selectionStart ?? 0, inp.selectionEnd ?? inp.value.length);
                                 if (txt) await ClipboardSetText(txt);
-                            } else if (e.key === 'v') {
-                                e.preventDefault();
-                                const txt = await ClipboardGetText();
-                                if (!txt) return;
-                                const s = inp.selectionStart ?? inp.value.length;
-                                const en = inp.selectionEnd ?? inp.value.length;
-                                const next = inp.value.substring(0, s) + txt + inp.value.substring(en);
-                                const idx = parseInt(inp.dataset.providerIndex ?? '-1');
-                                if (idx >= 0) updateProvider(idx, inp.name as keyof AIProviderConfig, next);
                             }
                         }}>
                         <h3 style={{ margin: '0 0 12px', color: 'var(--modal-text)' }}>設定</h3>
@@ -2351,6 +2342,16 @@ function App() {
                                                     type="text"
                                                     value={p.apiKey}
                                                     onChange={e => updateProvider(i, 'apiKey', e.target.value)}
+                                                    onPaste={async e => {
+                                                        e.preventDefault();
+                                                        const txt = await ClipboardGetText();
+                                                        if (!txt) return;
+                                                        const inp = e.currentTarget as HTMLInputElement;
+                                                        const s = inp.selectionStart ?? inp.value.length;
+                                                        const en = inp.selectionEnd ?? inp.value.length;
+                                                        const next = inp.value.substring(0, s) + txt + inp.value.substring(en);
+                                                        updateProvider(i, 'apiKey', next);
+                                                    }}
                                                     placeholder="APIキーを入力..."
                                                     autoComplete="off"
                                                     style={{ width: '100%', padding: '5px 8px', fontSize: '13px', border: '1px solid var(--input-border)', borderRadius: '4px', boxSizing: 'border-box', fontFamily: 'monospace', marginBottom: '8px', background: 'var(--input-bg)', color: 'var(--input-text)' }}
