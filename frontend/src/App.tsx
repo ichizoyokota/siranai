@@ -216,6 +216,7 @@ function App() {
     // View options
     const [showLineNumbers, setShowLineNumbers] = useState(true);
     const [showPreview, setShowPreview] = useState(true);
+    const [editorMounted, setEditorMounted] = useState(false);
 
     // Status bar
     const [cursorLine, setCursorLine] = useState(1);
@@ -492,7 +493,7 @@ function App() {
         } catch (err: any) {
             console.error('[useEffect:contentChange] Outer error:', err);
         }
-    }, [activeTabId]);
+    }, [activeTabId, editorMounted]);
     
     // Apply color theme CSS variables to document root
     useEffect(() => {
@@ -1890,6 +1891,7 @@ function App() {
     const handleEditorMount: OnMount = (editor, monaco) => {
         editorRef.current = editor;
         monacoRef.current = monaco;
+        setEditorMounted(true);
 
         // Step 2: Create initial tab model
         const activeTab = tabs.find(t => t.id === activeTabId);
@@ -2024,18 +2026,6 @@ function App() {
             editorDom.addEventListener('mouseup', handleEditorMouseUp, { capture: true, passive: false });
             void LogMessage('[EDITOR-MOUNT] Editor DOM listeners registered');
 
-            // Return cleanup function
-            return () => {
-                if (editorDom && dragoverHandlerRef.current && dropHandlerRef.current && editorMouseUpHandlerRef.current) {
-                    editorDom.removeEventListener('dragover', dragoverHandlerRef.current, { capture: true });
-                    editorDom.removeEventListener('drop', dropHandlerRef.current, { capture: true });
-                    editorDom.removeEventListener('mouseup', editorMouseUpHandlerRef.current, { capture: true });
-                }
-                editorDomRef.current = null;
-                dragoverHandlerRef.current = null;
-                dropHandlerRef.current = null;
-                editorMouseUpHandlerRef.current = null;
-            };
         }
 
         // Scroll sync: editor → preview pane
